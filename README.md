@@ -5,6 +5,7 @@
 ## MVP 功能
 
 - 建立/開啟專案與 C++ 原始碼，透過 CodeMirror 編輯、搜尋及語法上色。
+- 使用 clangd 提供 C++ completion、hover、診斷與定義跳轉。
 - 呼叫本機 G++ 以 C++17 編譯，呈現編譯器輸出。
 - 執行程式並檢視 stdin、stdout、stderr、結束碼與執行時間。
 - 建立多組本機測資，批次執行並精確比較輸出；提供 AC、WA、RE、TLE 和差異位置。
@@ -18,6 +19,7 @@
 - [Bun](https://bun.sh/) 1.3+
 - Rust stable 與 Cargo
 - GCC/G++（可放在工作區附近的 `mingw64/bin`，或加入 PATH）
+- clangd（建議 22.1.6，放在工作區附近的 `clangd_22.1.6/bin`）
 
 安裝 Bun 後，在專案根目錄執行：
 
@@ -41,9 +43,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 IDE 會自動搜尋工作區或應用程式附近的 `mingw64/bin/g++.exe`，也會使用 PATH 中的 `g++`。若仍顯示找不到編譯器，可將含有 `g++.exe` 的目錄加入 PATH，或設定 `IDEFOREXAM_GXX` 指向完整執行檔路徑。
 
+IntelliSense 會優先搜尋 `clangd_22.1.6/bin/clangd.exe`，並回退至 `clangd_18.1.3/bin/clangd.exe` 或 PATH 中的 clangd；也可用 `IDEFOREXAM_CLANGD` 指定完整路徑。IDE 會依專案中的 C++ 原始碼建立暫存 C++17 compilation database，並以偵測到的 G++ 查詢 MinGW 標準函式庫路徑。
+
 ## 技術組成
 
-- Svelte 5、TypeScript、CodeMirror 6
+- Svelte 5、TypeScript、CodeMirror 6、codemirror-languageserver
 - Tauri 2、Rust
 - Bun 套件管理
 - 本機 G++（C++17）

@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod engine;
+mod lsp;
 
 #[tauri::command]
 fn create_project(parent_path: String, name: String) -> Result<String, String> {
@@ -128,12 +129,54 @@ fn compare_output(expected: String, actual: String) -> engine::CompareResult {
     engine::compare_output(&expected, &actual)
 }
 
+#[tauri::command]
+fn start_clangd(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, lsp::LspManager>,
+    workspace_path: String,
+    document_path: String,
+) -> Result<lsp::LspSessionInfo, String> {
+    manager.start(
+        app,
+        std::path::Path::new(&workspace_path),
+        std::path::Path::new(&document_path),
+    )
+}
+
+#[tauri::command]
+fn send_clangd(
+    manager: tauri::State<'_, lsp::LspManager>,
+    session_id: String,
+    message: String,
+) -> Result<(), String> {
+    manager.send(&session_id, message)
+}
+
+#[tauri::command]
+fn stop_clangd(
+    manager: tauri::State<'_, lsp::LspManager>,
+    session_id: String,
+) -> Result<(), String> {
+    manager.stop(&session_id)
+}
+
+#[tauri::command]
+fn file_uri(path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("無法解析程式檔案路徑：{error}"))?;
+    url::Url::from_file_path(path)
+        .map(|uri| uri.to_string())
+        .map_err(|_| "無法將程式檔案路徑轉換成 URI。".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(engine::RunRegistry::default())
+        .manage(lsp::LspManager::default())
         .invoke_handler(tauri::generate_handler![
             create_project,
             list_source_files,
@@ -144,7 +187,11 @@ pub fn run() {
             register_run,
             cancel_run,
             finish_run,
-            compare_output
+            compare_output,
+            start_clangd,
+            send_clangd,
+            stop_clangd,
+            file_uri
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -124,9 +124,12 @@ pub fn compile(source_path: &Path) -> Result<CompileResult, String> {
     })
 }
 
-fn compiler_command() -> Command {
+pub fn compiler_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("IDEFOREXAM_GXX") {
-        return Command::new(path);
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
     }
 
     #[cfg(windows)]
@@ -148,12 +151,28 @@ fn compiler_command() -> Command {
         for ancestor in root.ancestors() {
             let candidate = ancestor.join(&relative_path);
             if candidate.is_file() {
-                return Command::new(candidate);
+                return Some(candidate);
             }
         }
     }
 
-    Command::new("g++")
+    let path_variable = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path_variable) {
+        #[cfg(windows)]
+        let candidate = directory.join("g++.exe");
+        #[cfg(not(windows))]
+        let candidate = directory.join("g++");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn compiler_command() -> Command {
+    compiler_path()
+        .map(Command::new)
+        .unwrap_or_else(|| Command::new("g++"))
 }
 
 pub fn run_program(

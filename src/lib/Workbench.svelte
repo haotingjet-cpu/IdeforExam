@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open, save } from "@tauri-apps/plugin-dialog";
-  import { EditorState } from "@codemirror/state";
+  import { Compartment, EditorState } from "@codemirror/state";
   import { EditorView, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
   import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
   import { searchKeymap } from "@codemirror/search";
+  import { LanguageServerClient, languageServerWithTransport, type Transport } from "codemirror-languageserver";
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, FileCode2, FolderOpen, FolderPlus, Play, Save, Search, Settings2, Square, Terminal, Trash2 } from "lucide-svelte";
 
   type ResultStatus = "AC" | "WA" | "RE" | "TLE";
@@ -27,6 +29,47 @@
   interface CompileResult { success: boolean; output: string; executablePath: string | null }
   interface RunResult { stdout: string; stderr: string; executionTimeMs: number; exitCode: number | null; timedOut: boolean; cancelled: boolean }
   interface CompareResult { accepted: boolean; firstDifference: number | null }
+  interface LspSessionInfo {
+    sessionId: string;
+    eventName: string;
+    rootUri: string;
+    documentUri: string;
+    clangdPath: string;
+  }
+
+  class TauriLspTransport implements Transport {
+    private messageHandler: ((message: string) => void) | undefined;
+    private closeHandler: (() => void) | undefined;
+    private errorHandler: ((error: Error) => void) | undefined;
+    private unlisten: UnlistenFn | undefined;
+    private sessionId: string;
+    private sendQueue: Promise<void> = Promise.resolve();
+
+    constructor(sessionId: string) { this.sessionId = sessionId; }
+
+    setUnlisten(unlisten: UnlistenFn) { this.unlisten = unlisten; }
+    send(message: string) {
+      this.sendQueue = this.sendQueue
+        .then(() => invoke<void>("send_clangd", { sessionId: this.sessionId, message }))
+        .catch((error) => { this.errorHandler?.(new Error(String(error))); });
+    }
+    onMessage(callback: (message: string) => void) { this.messageHandler = callback; }
+    onClose(callback: () => void) { this.closeHandler = callback; }
+    onError(callback: (error: Error) => void) { this.errorHandler = callback; }
+    receive(message: string) {
+      if (message === "__clangd_closed__") this.closeHandler?.();
+      else if (message.startsWith("__clangd_error__:")) this.errorHandler?.(new Error(message));
+      else this.messageHandler?.(message);
+    }
+    close() {
+      this.unlisten?.();
+      this.unlisten = undefined;
+      this.sendQueue = this.sendQueue
+        .then(() => invoke<void>("stop_clangd", { sessionId: this.sessionId }))
+        .catch(() => {});
+      this.closeHandler?.();
+    }
+  }
 
   const starterCode = `#include <iostream>
 
@@ -42,6 +85,11 @@ int main() {
   let editorPanelElement: HTMLElement;
   let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
+  const lspCompartment = new Compartment();
+  let lspTransport: TauriLspTransport | undefined;
+  let languageClient: LanguageServerClient | undefined;
+  let lspSession: LspSessionInfo | undefined;
+  let clangdStatus = $state("等待開啟 C++ 檔案");
   let source = $state(starterCode);
   let projectPath = $state("");
   let filePaths = $state<string[]>([]);
@@ -97,6 +145,7 @@ int main() {
           lineNumbers(), highlightActiveLineGutter(), history(), indentOnInput(), bracketMatching(), cpp(),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+          lspCompartment.of([]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               source = update.state.doc.toString();
@@ -134,6 +183,7 @@ int main() {
     }
     return () => {
       window.removeEventListener("resize", updateViewportMode);
+      closeLanguageServer();
       editorView?.destroy();
     };
   });
@@ -144,6 +194,70 @@ int main() {
     dirty = false;
   }
   function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
+  async function connectLanguageServer(path: string) {
+    const extension = /\.(cpp|cc|cxx|h|hpp)$/i.test(path);
+    if (!extension) {
+      closeLanguageServer();
+      return;
+    }
+
+    const workspacePath = projectPath || path.replace(/[\\/][^\\/]+$/, "");
+    if (!lspSession || lspSessionWorkspace !== workspacePath) {
+      closeLanguageServer();
+      clangdStatus = "啟動 clangd...";
+      try {
+        const session = await invoke<LspSessionInfo>("start_clangd", { workspacePath, documentPath: path });
+        const transport = new TauriLspTransport(session.sessionId);
+        const unlisten = await listen<string>(session.eventName, (event) => transport.receive(event.payload));
+        transport.setUnlisten(unlisten);
+        const workspaceFolders = [{ uri: session.rootUri, name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace" }];
+        const client = new LanguageServerClient({
+          transport,
+          autoClose: false,
+          rootUri: session.rootUri,
+          workspaceFolders,
+          documentUri: session.documentUri,
+          languageId: "cpp",
+          onCapabilities: () => { clangdStatus = "clangd IntelliSense"; },
+          onError: (error) => { clangdStatus = `clangd: ${error.message}`; },
+          onClose: () => { if (lspSession?.sessionId === session.sessionId) clangdStatus = "clangd 已中斷"; }
+        });
+        lspSession = session;
+        lspSessionWorkspace = workspacePath;
+        lspTransport = transport;
+        languageClient = client;
+      } catch (error) {
+        clangdStatus = `IntelliSense 無法啟動：${String(error)}`;
+        return;
+      }
+    }
+
+    if (!lspSession || !languageClient || !lspTransport) return;
+    const documentUri = await invoke<string>("file_uri", { path });
+    const workspaceFolders = [{ uri: lspSession.rootUri, name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace" }];
+    editorView?.dispatch({
+      effects: lspCompartment.reconfigure(languageServerWithTransport({
+        client: languageClient,
+        transport: lspTransport,
+        rootUri: lspSession.rootUri,
+        workspaceFolders,
+        documentUri,
+        languageId: "cpp",
+        onError: (error) => { clangdStatus = `clangd: ${error.message}`; }
+      }))
+    });
+  }
+  let lspSessionWorkspace = "";
+  function closeLanguageServer() {
+    editorView?.dispatch({ effects: lspCompartment.reconfigure([]) });
+    languageClient?.close();
+    if (!languageClient) lspTransport?.close();
+    languageClient = undefined;
+    lspTransport = undefined;
+    lspSession = undefined;
+    lspSessionWorkspace = "";
+    clangdStatus = "等待開啟 C++ 檔案";
+  }
   function clamp(value: number, min: number, max: number) { return Math.round(Math.max(min, Math.min(max, value))); }
   function saveLayout() {
     try {
@@ -225,6 +339,7 @@ int main() {
       activePath = path;
       setEditorContent(contents);
       setNotice(`已開啟 ${relativeFile(path)}`);
+      await connectLanguageServer(path);
     } catch (error) { setNotice(String(error), "error"); }
   }
   async function openProject() {
@@ -238,6 +353,7 @@ int main() {
       else {
         activePath = "";
         setEditorContent(starterCode);
+        closeLanguageServer();
         setNotice("專案已開啟，新增一個 C++ 檔案開始撰寫");
       }
     } catch (error) { setNotice(String(error), "error"); }
@@ -269,6 +385,7 @@ int main() {
     if (!confirmDiscardChanges()) return;
     activePath = "";
     setEditorContent(starterCode);
+    closeLanguageServer();
     setNotice("新檔案尚未儲存");
   }
   async function saveCurrent(): Promise<boolean> {
@@ -289,6 +406,7 @@ int main() {
       projectPath = path.replace(/[\\/][^\\/]+$/, "");
       dirty = false;
       await refreshFiles();
+      await connectLanguageServer(path);
       setNotice("檔案已儲存", "success");
       return true;
     } catch (error) { setNotice(String(error), "error"); return false; }
@@ -461,7 +579,7 @@ int main() {
     <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "untitled.cpp"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
       <div class="editor-host" bind:this={editorElement}></div>
-      <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
+      <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
     <aside class="test-panel">
       <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資編輯器</h2></div><button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== "" || !activeTest} title="執行目前測資"><Play size={14} fill="currentColor" /></button></div>
@@ -569,6 +687,9 @@ int main() {
   .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
   .editor-status { display: flex; height: 25px; flex: 0 0 25px; align-items: center; justify-content: flex-end; gap: 15px; padding: 0 13px; border-top: 1px solid #e9ede7; color: #8a958b; background: #f8faf6; font-size: 9px; }
   .editor-status span:first-child { overflow: hidden; max-width: 48%; margin-right: auto; text-overflow: ellipsis; white-space: nowrap; }
+  .editor-status .clangd-status { overflow: hidden; max-width: 38%; text-overflow: ellipsis; white-space: nowrap; }
+  .editor-status .clangd-status.ready { color: #4c7a55; }
+  .editor-status .clangd-status.unavailable { color: #ae5c3e; }
   .test-panel { display: flex; min-height: 0; flex-direction: column; grid-column: 5; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
   .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .panel-title-row h2 { margin: 3px 0 0; color: #304137; font-size: 14px; font-weight: 680; }
