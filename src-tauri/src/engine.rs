@@ -258,6 +258,8 @@ fn terminate_child(child: &mut Child) -> Result<std::process::ExitStatus, String
 pub fn compare_output(expected: &str, actual: &str) -> CompareResult {
     let expected = expected.replace("\r\n", "\n");
     let actual = actual.replace("\r\n", "\n");
+    let expected = expected.trim_end_matches('\n');
+    let actual = actual.trim_end_matches('\n');
     let first_difference = expected
         .chars()
         .zip(actual.chars())
@@ -320,10 +322,12 @@ mod tests {
     }
 
     #[test]
-    fn treats_trailing_newline_as_a_difference() {
-        let result = compare_output("answer\n", "answer");
-        assert!(!result.accepted);
-        assert_eq!(result.first_difference, Some(6));
+    fn ignores_trailing_newlines_but_preserves_internal_blank_lines() {
+        let result = compare_output("answer\n", "answer\n\n");
+        assert!(result.accepted);
+        assert_eq!(result.first_difference, None);
+        assert!(compare_output("answer\n", "answer").accepted);
+        assert!(!compare_output("answer\n\nvalue\n", "answer\nvalue\n").accepted);
     }
 
     #[test]

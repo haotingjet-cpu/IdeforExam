@@ -12,6 +12,7 @@
 
   type ResultStatus = "AC" | "WA" | "RE" | "TLE";
   type ConsoleTab = "output" | "build" | "diff";
+  type ResizeKind = "sidebar" | "main" | "console";
   interface TestCase {
     id: string;
     name: string;
@@ -36,7 +37,10 @@ int main() {
     return 0;
 }`;
   const storageKey = "ideforexam.test-cases.v1";
+  const layoutStorageKey = "ideforexam.layout.v1";
   let editorElement: HTMLDivElement;
+  let editorPanelElement: HTMLElement;
+  let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
   let source = $state(starterCode);
   let projectPath = $state("");
@@ -58,8 +62,34 @@ int main() {
   let noticeTone = $state("neutral");
   let showNewProject = $state(false);
   let projectName = $state("");
+  let sidebarWidth = $state(205);
+  let testWidth = $state(280);
+  let consoleHeight = $state(190);
+  let editorHeight = $state(330);
+  let testHeight = $state(210);
+  let sidebarHeight = $state(130);
+  let activeResize = $state<{ kind: ResizeKind; pointerId: number } | null>(null);
+  let viewportMode = $state<"desktop" | "stacked" | "mobile">("desktop");
 
   onMount(() => {
+    const updateViewportMode = () => {
+      viewportMode = window.innerWidth <= 740 ? "mobile" : window.innerWidth <= 980 ? "stacked" : "desktop";
+    };
+    updateViewportMode();
+    window.addEventListener("resize", updateViewportMode);
+
+    try {
+      const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
+      if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
+      if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
+      if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
+      if (typeof layout.editorHeight === "number") editorHeight = clamp(layout.editorHeight, 240, 560);
+      if (typeof layout.testHeight === "number") testHeight = clamp(layout.testHeight, 180, 420);
+      if (typeof layout.sidebarHeight === "number") sidebarHeight = clamp(layout.sidebarHeight, 100, 240);
+    } catch {
+      localStorage.removeItem(layoutStorageKey);
+    }
+
     editorView = new EditorView({
       state: EditorState.create({
         doc: source,
@@ -102,7 +132,10 @@ int main() {
         localStorage.removeItem(storageKey);
       }
     }
-    return () => editorView?.destroy();
+    return () => {
+      window.removeEventListener("resize", updateViewportMode);
+      editorView?.destroy();
+    };
   });
 
   function setEditorContent(content: string) {
@@ -111,6 +144,69 @@ int main() {
     dirty = false;
   }
   function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
+  function clamp(value: number, min: number, max: number) { return Math.round(Math.max(min, Math.min(max, value))); }
+  function saveLayout() {
+    try {
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, editorHeight, testHeight, sidebarHeight }));
+    } catch { /* Keep resizing available when local storage is unavailable. */ }
+  }
+  function startResize(event: PointerEvent, kind: ResizeKind) {
+    if (event.button !== 0) return;
+    activeResize = { kind, pointerId: event.pointerId };
+    const target = event.currentTarget;
+    if (target instanceof HTMLElement) target.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+  function moveResize(event: PointerEvent) {
+    if (!activeResize || activeResize.pointerId !== event.pointerId) return;
+    const bounds = workbenchElement.getBoundingClientRect();
+    if (activeResize.kind === "sidebar") {
+      if (window.innerWidth <= 740) sidebarHeight = clamp(event.clientY - bounds.top, 100, 240);
+      else sidebarWidth = clamp(event.clientX - bounds.left, 155, 360);
+    } else if (activeResize.kind === "main") {
+      if (window.innerWidth <= 980) {
+        const editorBounds = editorPanelElement.getBoundingClientRect();
+        editorHeight = clamp(event.clientY - editorBounds.top, 240, 560);
+      } else testWidth = clamp(bounds.right - event.clientX, 235, 480);
+    } else {
+      consoleHeight = clamp(bounds.bottom - event.clientY, 150, 420);
+    }
+  }
+  function endResize(event: PointerEvent) {
+    if (!activeResize || activeResize.pointerId !== event.pointerId) return;
+    activeResize = null;
+    saveLayout();
+  }
+  function resizeWithKeyboard(event: KeyboardEvent, kind: ResizeKind) {
+    const step = event.shiftKey ? 32 : 12;
+    if (kind === "sidebar") {
+      if (window.innerWidth <= 740) {
+        if (event.key === "ArrowUp") sidebarHeight = clamp(sidebarHeight - step, 100, 240);
+        else if (event.key === "ArrowDown") sidebarHeight = clamp(sidebarHeight + step, 100, 240);
+        else return;
+      } else {
+        if (event.key === "ArrowLeft") sidebarWidth = clamp(sidebarWidth - step, 155, 360);
+        else if (event.key === "ArrowRight") sidebarWidth = clamp(sidebarWidth + step, 155, 360);
+        else return;
+      }
+    } else if (kind === "main") {
+      if (window.innerWidth <= 980) {
+        if (event.key === "ArrowUp") editorHeight = clamp(editorHeight - step, 240, 560);
+        else if (event.key === "ArrowDown") editorHeight = clamp(editorHeight + step, 240, 560);
+        else return;
+      } else {
+        if (event.key === "ArrowLeft") testWidth = clamp(testWidth + step, 235, 480);
+        else if (event.key === "ArrowRight") testWidth = clamp(testWidth - step, 235, 480);
+        else return;
+      }
+    } else {
+      if (event.key === "ArrowUp") consoleHeight = clamp(consoleHeight + step, 150, 420);
+      else if (event.key === "ArrowDown") consoleHeight = clamp(consoleHeight - step, 150, 420);
+      else return;
+    }
+    event.preventDefault();
+    saveLayout();
+  }
   function confirmDiscardChanges() {
     if (!dirty) return true;
     return window.confirm("目前檔案有尚未儲存的變更，要捨棄嗎？");
@@ -342,7 +438,12 @@ int main() {
       {#if activeRunId && (busy === "run" || busy === "test")}<button class="stop-button" onclick={stopCurrentRun}><Square size={13} fill="currentColor" />停止</button>{/if}
     </div>
   </div>
-  <main class="workbench">
+  <main
+    class="workbench"
+    class:resizing={activeResize !== null}
+    bind:this={workbenchElement}
+    style={`--sidebar-width:${sidebarWidth}px;--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px;--sidebar-height:${sidebarHeight}px`}
+  >
     <aside class="sidebar">
       <section class="side-section files-section">
         <div class="section-heading"><span>專案檔案</span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
@@ -357,7 +458,7 @@ int main() {
       </section>
       <div class="sidebar-footer"><span class="compiler-dot"></span>G++ · C++17</div>
     </aside>
-    <section class="editor-panel">
+    <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "untitled.cpp"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
       <div class="editor-host" bind:this={editorElement}></div>
       <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
@@ -382,6 +483,9 @@ int main() {
       {:else if activeTest}<div class="diff-columns"><div><div class="output-label">EXPECTED</div><pre>{activeTest.expectedOutput}</pre></div><div><div class="output-label">ACTUAL</div><pre>{activeTest.actualOutput ?? "尚未執行此測資"}</pre></div>{#if activeTest.firstDifference !== undefined && activeTest.firstDifference !== null}<p class="diff-note">第一個差異位於第 {activeTest.firstDifference + 1} 個字元</p>{/if}</div>
       {:else}<pre class="compiler-output">請先建立測資。</pre>{/if}
     </section>
+    <button type="button" class="splitter splitter-sidebar" role="slider" aria-orientation={viewportMode === "mobile" ? "horizontal" : "vertical"} aria-valuemin={viewportMode === "mobile" ? 100 : 155} aria-valuemax={viewportMode === "mobile" ? 240 : 360} aria-valuenow={viewportMode === "mobile" ? sidebarHeight : sidebarWidth} aria-label="調整側欄大小" title="拖曳調整側欄大小" onpointerdown={(event) => startResize(event, "sidebar")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "sidebar")}><span></span></button>
+    <button type="button" class="splitter splitter-main" role="slider" aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"} aria-valuemin={viewportMode === "desktop" ? 235 : 240} aria-valuemax={viewportMode === "desktop" ? 480 : 560} aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight} aria-label="調整編輯器與測資比例" title="拖曳調整編輯器與測資比例" onpointerdown={(event) => startResize(event, "main")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "main")}><span></span></button>
+    <button type="button" class="splitter splitter-console" role="slider" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="420" aria-valuenow={consoleHeight} aria-label="調整輸出面板高度" title="拖曳調整輸出面板高度" onpointerdown={(event) => startResize(event, "console")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "console")}><span></span></button>
   </main>
   <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span>競程工作台 <b>0.1.0</b></span></footer>
 </div>
@@ -432,8 +536,8 @@ int main() {
   .stop-button { height: 30px; padding: 0 9px; border-color: #edcbbf; color: #a64f38; background: #fff7f3; }
   .stop-button:hover { background: #fcebe4; }
   button:disabled { opacity: .48; cursor: not-allowed; }
-  .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: 205px minmax(300px, 1fr) minmax(245px, 310px); grid-template-rows: minmax(240px, 1fr) minmax(150px, 220px); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
-  .sidebar { display: flex; min-height: 0; flex-direction: column; grid-row: 1 / 3; border-right: 1px solid #e1e6df; background: #f8faf6; }
+  .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: var(--sidebar-width) 6px minmax(300px, 1fr) 6px var(--test-width); grid-template-rows: minmax(240px, 1fr) 6px var(--console-height); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
+  .sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 1; grid-row: 1 / 4; border-right: 1px solid #e1e6df; background: #f8faf6; }
   .side-section { padding: 12px 9px 8px; }
   .files-section { min-height: 145px; border-bottom: 1px solid #e5e9e3; }
   .cases-section { min-height: 0; flex: 1; overflow: auto; }
@@ -455,7 +559,7 @@ int main() {
   .sidebar-footer { display: flex; align-items: center; gap: 7px; padding: 11px 16px; border-top: 1px solid #e5e9e3; color: #78847a; font-size: 10px; }
   .compiler-dot { width: 7px; height: 7px; border-radius: 50%; background: #82a875; box-shadow: 0 0 0 3px #82a87520; }
   .empty-note { margin: 5px 8px; color: #929d93; font-size: 11px; line-height: 1.6; }
-  .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; border-right: 1px solid #e1e6df; }
+  .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3; grid-row: 1; border-right: 1px solid #e1e6df; }
   .editor-tabbar { display: flex; height: 39px; flex: 0 0 39px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e5e9e3; background: #f8faf6; }
   .active-file-tab { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 2px solid #52775c; color: #3f5446; font-size: 11px; }
   .active-file-tab span { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }
@@ -465,7 +569,7 @@ int main() {
   .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
   .editor-status { display: flex; height: 25px; flex: 0 0 25px; align-items: center; justify-content: flex-end; gap: 15px; padding: 0 13px; border-top: 1px solid #e9ede7; color: #8a958b; background: #f8faf6; font-size: 9px; }
   .editor-status span:first-child { overflow: hidden; max-width: 48%; margin-right: auto; text-overflow: ellipsis; white-space: nowrap; }
-  .test-panel { display: flex; min-height: 0; flex-direction: column; padding: 14px 13px 12px; background: #fcfdfb; }
+  .test-panel { display: flex; min-height: 0; flex-direction: column; grid-column: 5; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
   .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .panel-title-row h2 { margin: 3px 0 0; color: #304137; font-size: 14px; font-weight: 680; }
   .run-case-button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid #dce5da; border-radius: 5px; color: #416949; background: #eff5ec; cursor: pointer; }
@@ -480,7 +584,17 @@ int main() {
   .case-result-row { display: flex; min-height: 30px; align-items: center; gap: 8px; color: #879187; font-size: 10px; }
   .result-pill { padding: 3px 7px; border-radius: 3px; background: #edf4ea; font-size: 9px; font-weight: 800; }
   .result-placeholder { color: #9aa39a; }
-  .console-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 2 / 4; border-top: 1px solid #e1e6df; background: #fbfcf9; }
+  .console-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3 / 6; grid-row: 3; border-top: 1px solid #e1e6df; background: #fbfcf9; }
+  .splitter { z-index: 2; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 0; border: 0; appearance: none; background: transparent; touch-action: none; user-select: none; }
+  .splitter span { flex: 0 0 auto; border-radius: 2px; background: #cdd6cc; transition: background-color .12s ease, width .12s ease, height .12s ease; }
+  .splitter:hover span, .splitter:focus-visible span, .workbench.resizing .splitter span { background: #b96a45; }
+  .splitter:focus-visible { outline: 2px solid #b96a45; outline-offset: -1px; }
+  .splitter-sidebar { grid-column: 2; grid-row: 1 / 4; cursor: col-resize; }
+  .splitter-sidebar span, .splitter-main span { width: 2px; height: 34px; }
+  .splitter-main { grid-column: 4; grid-row: 1; cursor: col-resize; }
+  .splitter-console { grid-column: 3 / 6; grid-row: 2; cursor: row-resize; }
+  .splitter-console span { width: 34px; height: 2px; }
+  .workbench.resizing, .workbench.resizing * { user-select: none; }
   .console-header { display: flex; min-height: 38px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e8ece6; background: #f8faf6; }
   .console-tabs { display: flex; align-items: stretch; gap: 3px; padding-left: 9px; }
   .console-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; color: #829084; background: transparent; font-size: 10px; cursor: pointer; }
@@ -519,10 +633,15 @@ int main() {
   .confirm-button { border-color: #315841 !important; color: white; background: #315841; }
   @media (max-width: 980px) {
     .app-shell { min-height: 780px; }
-    .workbench { grid-template-columns: 175px minmax(280px, 1fr); grid-template-rows: minmax(300px, 1fr) 220px 180px; }
-    .sidebar { grid-row: 1 / 4; }
-    .test-panel { grid-column: 2; grid-row: 2; border-top: 1px solid #e1e6df; }
-    .console-panel { grid-column: 2; grid-row: 3; }
+    .workbench { grid-template-columns: var(--sidebar-width) 6px minmax(280px, 1fr); grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(180px, var(--test-height)) 6px minmax(150px, var(--console-height)); }
+    .sidebar { grid-column: 1; grid-row: 1 / 6; }
+    .editor-panel { grid-column: 3; grid-row: 1; }
+    .test-panel { grid-column: 3; grid-row: 3; border-top: 1px solid #e1e6df; }
+    .console-panel { grid-column: 3; grid-row: 5; }
+    .splitter-sidebar { grid-column: 2; grid-row: 1 / 6; }
+    .splitter-main { grid-column: 3; grid-row: 2; cursor: row-resize; }
+    .splitter-main span { width: 34px; height: 2px; }
+    .splitter-console { grid-column: 3; grid-row: 4; }
     .case-textarea { min-height: 45px; }
     .expected-area { min-height: 40px; }
   }
@@ -542,14 +661,18 @@ int main() {
     .run-actions { gap: 4px; }
     .timeout-field { padding: 0 4px; }
     .compile-button, .run-button, .test-button, .stop-button { gap: 4px; padding: 0 7px; font-size: 10px; }
-    .workbench { display: flex; flex-direction: column; overflow: visible; }
-    .sidebar { min-height: 120px; max-height: 180px; order: 0; border-right: 0; border-bottom: 1px solid #e1e6df; }
+    .workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); overflow: visible; }
+    .sidebar { min-height: 0; max-height: none; grid-column: 1; grid-row: 1; border-right: 0; border-bottom: 1px solid #e1e6df; }
     .files-section { min-height: 90px; }
     .cases-section { min-height: 45px; max-height: 75px; }
     .sidebar-footer { display: none; }
-    .editor-panel { min-height: 360px; order: 1; border-right: 0; }
-    .test-panel { min-height: 300px; order: 2; border-top: 1px solid #e1e6df; }
-    .console-panel { min-height: 210px; order: 3; border-top: 1px solid #e1e6df; }
+    .editor-panel { min-height: 0; grid-column: 1; grid-row: 3; border-right: 0; }
+    .test-panel { min-height: 0; grid-column: 1; grid-row: 5; border-top: 1px solid #e1e6df; }
+    .console-panel { min-height: 0; grid-column: 1; grid-row: 7; border-top: 1px solid #e1e6df; }
+    .splitter-sidebar { grid-column: 1; grid-row: 2; cursor: row-resize; }
+    .splitter-sidebar span { width: 34px; height: 2px; }
+    .splitter-main { grid-column: 1; grid-row: 4; }
+    .splitter-console { grid-column: 1; grid-row: 6; }
     .statusbar { gap: 10px; }
     .status-project { max-width: 68%; }
   }

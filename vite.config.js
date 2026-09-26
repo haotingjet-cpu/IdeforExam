@@ -21,12 +21,12 @@ export default defineConfig(() => ({
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 1420,
         }
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/mingw64/**"],
     },
   },
 }));
