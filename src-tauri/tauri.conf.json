@@ -24,6 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../resources/mingw64.zip": "resources/mingw64.zip",
+      "../resources/clangd_22.1.6.zip": "resources/clangd_22.1.6.zip"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

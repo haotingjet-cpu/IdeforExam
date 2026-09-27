@@ -125,6 +125,9 @@ pub fn compile(source_path: &Path) -> Result<CompileResult, String> {
 }
 
 pub fn compiler_path() -> Option<PathBuf> {
+    if let Some(paths) = crate::toolchains::active_paths() {
+        return Some(paths.gxx);
+    }
     if let Some(path) = std::env::var_os("IDEFOREXAM_GXX") {
         let path = PathBuf::from(path);
         if path.is_file() {

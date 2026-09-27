@@ -152,6 +152,9 @@ impl LspManager {
 }
 
 fn find_clangd(workspace_path: &Path) -> Option<PathBuf> {
+    if let Some(paths) = crate::toolchains::active_paths() {
+        return Some(paths.clangd);
+    }
     if let Some(path) = std::env::var_os("IDEFOREXAM_CLANGD") {
         let path = PathBuf::from(path);
         if path.is_file() {

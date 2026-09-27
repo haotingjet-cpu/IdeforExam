@@ -9,6 +9,7 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
   import { searchKeymap } from "@codemirror/search";
+  import localforage from "localforage";
   import { LanguageServerClient, languageServerWithTransport, type Transport } from "codemirror-languageserver";
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, FileCode2, FolderOpen, FolderPlus, Play, Save, Search, Settings2, Square, Terminal, Trash2 } from "lucide-svelte";
 
@@ -36,6 +37,7 @@
     documentUri: string;
     clangdPath: string;
   }
+  interface ToolchainInfo { gxxPath: string; clangdPath: string; extracted: boolean }
 
   class TauriLspTransport implements Transport {
     private messageHandler: ((message: string) => void) | undefined;
@@ -90,6 +92,9 @@ int main() {
   let languageClient: LanguageServerClient | undefined;
   let lspSession: LspSessionInfo | undefined;
   let clangdStatus = $state("等待開啟 C++ 檔案");
+  let toolchainsReady = $state(false);
+  let toolchainStatus = $state("正在檢查 C++ 工具鏈...");
+  let toolchainInitialization: Promise<ToolchainInfo>;
   let source = $state(starterCode);
   let projectPath = $state("");
   let filePaths = $state<string[]>([]);
@@ -125,6 +130,14 @@ int main() {
     };
     updateViewportMode();
     window.addEventListener("resize", updateViewportMode);
+    toolchainInitialization = invoke<ToolchainInfo>("ensure_toolchains");
+    void toolchainInitialization.then((toolchains) => {
+      toolchainsReady = true;
+      toolchainStatus = toolchains.extracted ? "C++ 工具鏈已安裝" : "G++ · clangd 就緒";
+    }).catch((error) => {
+      toolchainStatus = `工具鏈準備失敗：${String(error)}`;
+      setNotice(toolchainStatus, "error");
+    });
 
     try {
       const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
@@ -202,6 +215,11 @@ int main() {
     }
 
     const workspacePath = projectPath || path.replace(/[\\/][^\\/]+$/, "");
+    try {
+      await toolchainInitialization;
+    } catch {
+      return;
+    }
     if (!lspSession || lspSessionWorkspace !== workspacePath) {
       closeLanguageServer();
       clangdStatus = "啟動 clangd...";
@@ -412,6 +430,7 @@ int main() {
     } catch (error) { setNotice(String(error), "error"); return false; }
   }
   async function compileCurrent(): Promise<boolean> {
+    if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return false; }
     if (!(await saveCurrent())) return false;
     busy = "compile";
     compilerOutput = "正在呼叫 G++...";
@@ -473,6 +492,7 @@ int main() {
     persistTests();
   }
   async function runTests(all: boolean) {
+    if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return; }
     if (!(await saveCurrent())) return;
     busy = "test";
     compilerOutput = "正在編譯測試程式...";
@@ -550,9 +570,9 @@ int main() {
     </div>
     <div class="run-actions">
       <label class="timeout-field" title="程式逾時上限"><Clock3 size={14} /><input type="number" min="100" max="300000" step="100" bind:value={timeoutMs} aria-label="執行逾時毫秒" /><span>ms</span></label>
-      <button class="compile-button" onclick={compileCurrent} disabled={busy !== ""}><Settings2 size={15} />編譯</button>
-      <button class="run-button" onclick={runProgram} disabled={busy !== ""}><Play size={15} fill="currentColor" />執行</button>
-      <button class="test-button" onclick={() => runTests(true)} disabled={busy !== ""}><CircleCheck size={15} />全部測試</button>
+      <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady}><Settings2 size={15} />編譯</button>
+      <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady}><Play size={15} fill="currentColor" />執行</button>
+      <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady}><CircleCheck size={15} />全部測試</button>
       {#if activeRunId && (busy === "run" || busy === "test")}<button class="stop-button" onclick={stopCurrentRun}><Square size={13} fill="currentColor" />停止</button>{/if}
     </div>
   </div>
@@ -574,7 +594,7 @@ int main() {
           {#if testCase.status === "AC"}<CircleCheck size={15} class="status-ac" />{:else if testCase.status}<CircleX size={15} class="status-fail" />{:else}<span class="case-index">{String(index + 1).padStart(2, "0")}</span>{/if}<span>{testCase.name}</span>
         </button></li>{/each}</ul>
       </section>
-      <div class="sidebar-footer"><span class="compiler-dot"></span>G++ · C++17</div>
+      <div class="sidebar-footer"><span class:compiler-dot={toolchainsReady} class:compiler-waiting={!toolchainsReady}></span>{toolchainStatus}</div>
     </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "untitled.cpp"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>

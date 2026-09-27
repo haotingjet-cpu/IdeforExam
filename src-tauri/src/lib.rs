@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod engine;
 mod lsp;
+mod toolchains;
 
 #[tauri::command]
 fn create_project(parent_path: String, name: String) -> Result<String, String> {
@@ -81,10 +82,29 @@ fn save_source(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn compile_source(path: String) -> Result<engine::CompileResult, String> {
-    tauri::async_runtime::spawn_blocking(move || engine::compile(std::path::Path::new(&path)))
+async fn ensure_toolchains(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, toolchains::ToolchainManager>,
+) -> Result<toolchains::ToolchainInfo, String> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.ensure(&app))
         .await
-        .map_err(|error| format!("編譯工作失敗：{error}"))?
+        .map_err(|error| format!("工具鏈初始化工作失敗：{error}"))?
+}
+
+#[tauri::command]
+async fn compile_source(
+    app: tauri::AppHandle,
+    toolchains: tauri::State<'_, toolchains::ToolchainManager>,
+    path: String,
+) -> Result<engine::CompileResult, String> {
+    let toolchains = toolchains.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        toolchains.ensure(&app)?;
+        engine::compile(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("編譯工作失敗：{error}"))?
 }
 
 #[tauri::command]
@@ -130,12 +150,18 @@ fn compare_output(expected: String, actual: String) -> engine::CompareResult {
 }
 
 #[tauri::command]
-fn start_clangd(
+async fn start_clangd(
     app: tauri::AppHandle,
+    toolchains: tauri::State<'_, toolchains::ToolchainManager>,
     manager: tauri::State<'_, lsp::LspManager>,
     workspace_path: String,
     document_path: String,
 ) -> Result<lsp::LspSessionInfo, String> {
+    let toolchains = toolchains.inner().clone();
+    let toolchain_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || toolchains.ensure(&toolchain_app))
+        .await
+        .map_err(|error| format!("工具鏈初始化工作失敗：{error}"))??;
     manager.start(
         app,
         std::path::Path::new(&workspace_path),
@@ -177,7 +203,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(engine::RunRegistry::default())
         .manage(lsp::LspManager::default())
+        .manage(toolchains::ToolchainManager::default())
         .invoke_handler(tauri::generate_handler![
+            ensure_toolchains,
             create_project,
             list_source_files,
             read_source,
