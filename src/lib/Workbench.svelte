@@ -73,14 +73,17 @@
     }
   }
 
+  //  cin.tie(nullptr);
+  //  ios_base::sync_with_stdio(false);
   const starterCode = `#include <bits/stdc++.h>
 using namespace std;
 
 int main() {
-    cin.tie(nullptr)->sync_with_stdio(false);
     int value;
+
     cin >> value;
     cout << value;
+
     return 0;
 }`;
   const storageKey = "ideforexam.test-cases.v1";
