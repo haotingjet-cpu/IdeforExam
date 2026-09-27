@@ -11,5 +11,4 @@ vite.config.ts.timestamp-*
 /mingw64/*
 /cpp_file/*
 /clangd_22.1.6/*
-/resources/*
 !/**/README.md
