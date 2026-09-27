@@ -15,7 +15,7 @@
 
   type ResultStatus = "AC" | "WA" | "RE" | "TLE";
   type ConsoleTab = "output" | "build" | "diff";
-  type ResizeKind = "sidebar" | "main" | "console";
+  type ResizeKind = "main" | "console";
   interface TestCase {
     id: string;
     name: string;
@@ -117,13 +117,12 @@ int main() {
   let noticeTone = $state("neutral");
   let showNewProject = $state(false);
   let projectName = $state("");
-  let sidebarWidth = $state(205);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
   let editorHeight = $state(330);
   let testHeight = $state(210);
-  let sidebarHeight = $state(130);
   let activeResize = $state<{ kind: ResizeKind; pointerId: number } | null>(null);
+  let showTestManager = $state(false);
   let viewportMode = $state<"desktop" | "stacked" | "mobile">("desktop");
 
   onMount(() => {
@@ -143,12 +142,10 @@ int main() {
 
     try {
       const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
-      if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
       if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
       if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
       if (typeof layout.editorHeight === "number") editorHeight = clamp(layout.editorHeight, 240, 560);
       if (typeof layout.testHeight === "number") testHeight = clamp(layout.testHeight, 180, 420);
-      if (typeof layout.sidebarHeight === "number") sidebarHeight = clamp(layout.sidebarHeight, 100, 240);
     } catch {
       localStorage.removeItem(layoutStorageKey);
     }
@@ -280,7 +277,7 @@ int main() {
   function clamp(value: number, min: number, max: number) { return Math.round(Math.max(min, Math.min(max, value))); }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, editorHeight, testHeight, sidebarHeight }));
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ testWidth, consoleHeight, editorHeight, testHeight }));
     } catch { /* Keep resizing available when local storage is unavailable. */ }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
@@ -293,10 +290,7 @@ int main() {
   function moveResize(event: PointerEvent) {
     if (!activeResize || activeResize.pointerId !== event.pointerId) return;
     const bounds = workbenchElement.getBoundingClientRect();
-    if (activeResize.kind === "sidebar") {
-      if (window.innerWidth <= 740) sidebarHeight = clamp(event.clientY - bounds.top, 100, 240);
-      else sidebarWidth = clamp(event.clientX - bounds.left, 155, 360);
-    } else if (activeResize.kind === "main") {
+    if (activeResize.kind === "main") {
       if (window.innerWidth <= 980) {
         const editorBounds = editorPanelElement.getBoundingClientRect();
         editorHeight = clamp(event.clientY - editorBounds.top, 240, 560);
@@ -312,17 +306,7 @@ int main() {
   }
   function resizeWithKeyboard(event: KeyboardEvent, kind: ResizeKind) {
     const step = event.shiftKey ? 32 : 12;
-    if (kind === "sidebar") {
-      if (window.innerWidth <= 740) {
-        if (event.key === "ArrowUp") sidebarHeight = clamp(sidebarHeight - step, 100, 240);
-        else if (event.key === "ArrowDown") sidebarHeight = clamp(sidebarHeight + step, 100, 240);
-        else return;
-      } else {
-        if (event.key === "ArrowLeft") sidebarWidth = clamp(sidebarWidth - step, 155, 360);
-        else if (event.key === "ArrowRight") sidebarWidth = clamp(sidebarWidth + step, 155, 360);
-        else return;
-      }
-    } else if (kind === "main") {
+    if (kind === "main") {
       if (window.innerWidth <= 980) {
         if (event.key === "ArrowUp") editorHeight = clamp(editorHeight - step, 240, 560);
         else if (event.key === "ArrowDown") editorHeight = clamp(editorHeight + step, 240, 560);
@@ -481,12 +465,19 @@ int main() {
     testCases = [...testCases, { id, name: `測資 ${testCases.length + 1}`, input: "", expectedOutput: "" }];
     activeTestId = id;
     persistTests();
+    showTestManager = true;
   }
   function removeTestCase(id: string) {
     if (testCases.length === 1) return;
     testCases = testCases.filter((testCase) => testCase.id !== id);
     if (activeTestId === id) activeTestId = testCases[0].id;
     persistTests();
+  }
+  function openTestManager() {
+    showTestManager = true;
+  }
+  function closeTestManager() {
+    showTestManager = false;
   }
   function updateTest(id: string, field: "name" | "input" | "expectedOutput", value: string) {
     testCases = testCases.map((testCase) => testCase.id === id ? { ...testCase, [field]: value } : testCase);
@@ -581,35 +572,32 @@ int main() {
     class="workbench"
     class:resizing={activeResize !== null}
     bind:this={workbenchElement}
-    style={`--sidebar-width:${sidebarWidth}px;--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px;--sidebar-height:${sidebarHeight}px`}
+    style={`--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px`}
   >
-    <aside class="sidebar">
-      <section class="side-section files-section">
-        <div class="section-heading"><span>專案檔案</span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
-        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={file === activePath} class="file-item" onclick={() => loadFile(file)}><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if file === activePath && dirty}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
-        {:else}<p class="empty-note">開啟資料夾以瀏覽來源檔</p>{/if}
-      </section>
-      <section class="side-section cases-section">
-        <div class="section-heading"><span>測試案例 <small>{testCases.length}</small></span><button class="mini-icon" title="新增測資" aria-label="新增測資" onclick={addTestCase}><CirclePlus size={15} /></button></div>
-        <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li><button class:active={testCase.id === activeTestId} class="case-item" onclick={() => activeTestId = testCase.id}>
-          {#if testCase.status === "AC"}<CircleCheck size={15} class="status-ac" />{:else if testCase.status}<CircleX size={15} class="status-fail" />{:else}<span class="case-index">{String(index + 1).padStart(2, "0")}</span>{/if}<span>{testCase.name}</span>
-        </button></li>{/each}</ul>
-      </section>
-      <div class="sidebar-footer"><span class:compiler-dot={toolchainsReady} class:compiler-waiting={!toolchainsReady}></span>{toolchainStatus}</div>
-    </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "untitled.cpp"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
       <div class="editor-host" bind:this={editorElement}></div>
       <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
-    <aside class="test-panel">
-      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資編輯器</h2></div><button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== "" || !activeTest} title="執行目前測資"><Play size={14} fill="currentColor" /></button></div>
-      {#if activeTest}
-        <div class="case-name-row"><input class="case-name" value={activeTest.name} aria-label="測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} /><button class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button></div>
-        <label class="code-field-label" for="test-input">STANDARD INPUT</label><textarea id="test-input" class="case-textarea" value={activeTest.input} oninput={(event) => updateTest(activeTest.id, "input", event.currentTarget.value)} spellcheck="false"></textarea>
-        <label class="code-field-label" for="test-expected">EXPECTED OUTPUT</label><textarea id="test-expected" class="case-textarea expected-area" value={activeTest.expectedOutput} oninput={(event) => updateTest(activeTest.id, "expectedOutput", event.currentTarget.value)} spellcheck="false"></textarea>
-        <div class="case-result-row">{#if activeTest.status}<span class:status-ac={activeTest.status === "AC"} class:status-fail={activeTest.status !== "AC"} class="result-pill">{activeTest.status}</span>{:else}<span class="result-placeholder">尚未執行</span>{/if}{#if activeTest.executionTimeMs !== undefined}<span>{activeTest.executionTimeMs} ms</span>{/if}</div>
-      {:else}<p class="empty-note">新增一組測資以開始測試。</p>{/if}
+    <aside class="case-sidebar">
+      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測試案例 <small>{testCases.length}</small></h2></div><button class="mini-icon" title="測資編輯主控台" aria-label="測資編輯主控台" onclick={openTestManager}><Settings2 size={15} /></button></div>
+      {#if testCases.length}
+        <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
+          <button
+            class="case-chip"
+            class:case-ac={testCase.status === "AC"}
+            class:case-wa={testCase.status === "WA"}
+            class:case-other={testCase.status !== "AC" && testCase.status !== "WA"}
+            class:active={activeTestId === testCase.id}
+            onclick={() => activeTestId = testCase.id}
+            title={`檢視 ${testCase.name}`}
+          >
+            <span class="case-index">#{String(index + 1).padStart(2, "0")}</span>
+            <span class="case-result">{testCase.status ?? "—"}</span>
+          </button>
+          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
+        </li>{/each}</ul>
+      {:else}<p class="empty-note">尚無測資，點擊右上角開啟主控台新增。</p>{/if}
     </aside>
     <section class="console-panel">
       <div class="console-header"><div class="console-tabs" role="tablist" aria-label="執行結果">
@@ -622,16 +610,59 @@ int main() {
       {:else if activeTest}<div class="diff-columns"><div><div class="output-label">EXPECTED</div><pre>{activeTest.expectedOutput}</pre></div><div><div class="output-label">ACTUAL</div><pre>{activeTest.actualOutput ?? "尚未執行此測資"}</pre></div>{#if activeTest.firstDifference !== undefined && activeTest.firstDifference !== null}<p class="diff-note">第一個差異位於第 {activeTest.firstDifference + 1} 個字元</p>{/if}</div>
       {:else}<pre class="compiler-output">請先建立測資。</pre>{/if}
     </section>
-    <button type="button" class="splitter splitter-sidebar" role="slider" aria-orientation={viewportMode === "mobile" ? "horizontal" : "vertical"} aria-valuemin={viewportMode === "mobile" ? 100 : 155} aria-valuemax={viewportMode === "mobile" ? 240 : 360} aria-valuenow={viewportMode === "mobile" ? sidebarHeight : sidebarWidth} aria-label="調整側欄大小" title="拖曳調整側欄大小" onpointerdown={(event) => startResize(event, "sidebar")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "sidebar")}><span></span></button>
     <button type="button" class="splitter splitter-main" role="slider" aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"} aria-valuemin={viewportMode === "desktop" ? 235 : 240} aria-valuemax={viewportMode === "desktop" ? 480 : 560} aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight} aria-label="調整編輯器與測資比例" title="拖曳調整編輯器與測資比例" onpointerdown={(event) => startResize(event, "main")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "main")}><span></span></button>
     <button type="button" class="splitter splitter-console" role="slider" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="420" aria-valuenow={consoleHeight} aria-label="調整輸出面板高度" title="拖曳調整輸出面板高度" onpointerdown={(event) => startResize(event, "console")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "console")}><span></span></button>
   </main>
-  <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span>競程工作台 <b>0.1.0</b></span></footer>
+  <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span><span>競程工作台 <b>0.1.0</b></span></footer>
 </div>
 
 {#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
   <div class="modal-icon"><FolderPlus size={19} /></div><h2 id="new-project-title">建立 C++ 專案</h2><p>選擇儲存位置後，工作台會建立 main.cpp。</p>
   <form onsubmit={createProject}><label for="project-name">專案名稱</label><input id="project-name" bind:value={projectName} placeholder="例如：apcs-practice" /><div class="modal-actions"><button type="button" class="cancel-button" onclick={() => showNewProject = false}>取消</button><button type="submit" class="confirm-button" disabled={!projectName.trim()}>選擇位置並建立</button></div></form>
+</dialog></div>{/if}
+
+{#if showTestManager}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeTestManager(); }}><dialog open class="project-modal test-manager-modal" aria-labelledby="test-manager-title">
+  <div class="modal-title-row">
+    <div class="modal-icon"><Code2 size={19} /></div>
+    <button type="button" class="mini-icon modal-close" title="關閉" aria-label="關閉" onclick={closeTestManager}><CircleX size={18} /></button>
+  </div>
+  <h2 id="test-manager-title">測資編輯主控台</h2>
+  <div class="test-manager-body">
+    <div class="test-manager-editor">
+      {#if activeTest}
+        <div class="case-name-row">
+          <input class="case-name" value={activeTest.name} aria-label="測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
+          <button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== ""} title="執行目前測資"><Play size={14} fill="currentColor" /></button>
+          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button>
+        </div>
+        <label class="code-field-label" for="test-input">STANDARD INPUT</label><textarea id="test-input" class="case-textarea" value={activeTest.input} oninput={(event) => updateTest(activeTest.id, "input", event.currentTarget.value)} spellcheck="false"></textarea>
+        <label class="code-field-label" for="test-expected">EXPECTED OUTPUT</label><textarea id="test-expected" class="case-textarea expected-area" value={activeTest.expectedOutput} oninput={(event) => updateTest(activeTest.id, "expectedOutput", event.currentTarget.value)} spellcheck="false"></textarea>
+        <div class="case-result-row">{#if activeTest.status}<span class:status-ac={activeTest.status === "AC"} class:status-fail={activeTest.status !== "AC"} class="result-pill">{activeTest.status}</span>{:else}<span class="result-placeholder">尚未執行</span>{/if}{#if activeTest.executionTimeMs !== undefined}<span>{activeTest.executionTimeMs} ms</span>{/if}</div>
+      {:else}
+        <p class="empty-note">尚無測資，請於右側新增一筆。</p>
+      {/if}
+    </div>
+    <aside class="test-manager-list">
+      <div class="panel-title-row"><h2>測試案例 <small>{testCases.length}</small></h2><button class="mini-icon" title="新增測資" aria-label="新增測資" onclick={addTestCase}><CirclePlus size={15} /></button></div>
+      {#if testCases.length}
+        <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
+          <button
+            class="case-chip"
+            class:case-ac={testCase.status === "AC"}
+            class:case-wa={testCase.status === "WA"}
+            class:case-other={testCase.status !== "AC" && testCase.status !== "WA"}
+            class:active={activeTestId === testCase.id}
+            onclick={() => activeTestId = testCase.id}
+            title={`編輯 ${testCase.name}`}
+          >
+            <span class="case-index">#{String(index + 1).padStart(2, "0")}</span>
+            <span class="case-result">{testCase.status ?? "—"}</span>
+          </button>
+          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
+        </li>{/each}</ul>
+      {:else}<p class="empty-note">尚無測資，點擊上方新增。</p>{/if}
+    </aside>
+  </div>
 </dialog></div>{/if}
 
 <style>
@@ -675,30 +706,29 @@ int main() {
   .stop-button { height: 30px; padding: 0 9px; border-color: #edcbbf; color: #a64f38; background: #fff7f3; }
   .stop-button:hover { background: #fcebe4; }
   button:disabled { opacity: .48; cursor: not-allowed; }
-  .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: var(--sidebar-width) 6px minmax(300px, 1fr) 6px var(--test-width); grid-template-rows: minmax(240px, 1fr) 6px var(--console-height); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
-  .sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 1; grid-row: 1 / 4; border-right: 1px solid #e1e6df; background: #f8faf6; }
-  .side-section { padding: 12px 9px 8px; }
-  .files-section { min-height: 145px; border-bottom: 1px solid #e5e9e3; }
-  .cases-section { min-height: 0; flex: 1; overflow: auto; }
-  .section-heading { display: flex; align-items: center; justify-content: space-between; padding: 1px 7px 9px; color: #7b877d; font-size: 10px; font-weight: 750; }
-  .section-heading small { margin-left: 4px; color: #a0aaa0; font-size: 10px; font-weight: 550; }
+  .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(300px, 1fr) 6px var(--test-width); grid-template-rows: minmax(240px, 1fr) 6px var(--console-height); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
   .mini-icon { width: 25px; height: 25px; border-radius: 4px; }
-  .file-list, .case-list { margin: 0; padding: 0; list-style: none; }
-  .file-item, .case-item { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; border: 0; border-radius: 4px; color: #647268; background: transparent; text-align: left; cursor: pointer; }
-  .file-item span, .case-item span:not(.case-index) { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
-  .file-item:hover, .case-item:hover { background: #eff3ed; }
-  .file-item.active, .case-item.active { color: #2e563c; background: #e9f0e7; }
-  .file-item.active { font-weight: 650; }
-  .file-item :global(svg) { flex: 0 0 auto; color: #738d75; }
-  .file-dirty { margin-left: auto; }
-  .case-item { min-height: 33px; font-size: 11px; }
-  .case-index { width: 16px; color: #9ba69c; font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; }
+  .case-list { display: flex; min-height: 0; flex-direction: column; gap: 6px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+  .case-row { display: flex; align-items: center; gap: 6px; }
+  .case-chip { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border: 1.5px solid #e4e9e2; border-radius: 5px; color: #45564a; background: #fff; text-align: left; cursor: pointer; }
+  .case-chip:hover { background: #f4f7f2; }
+  .case-chip.active { background: #eef4ec; box-shadow: 0 0 0 1.5px #9ab89a inset; }
+  .case-row .remove-case { flex: 0 0 auto; }
+  .case-index { color: #647268; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; font-weight: 650; }
+  .case-result { padding: 2px 7px; border-radius: 3px; color: #647268; background: #eef2ec; font-size: 9px; font-weight: 800; letter-spacing: .02em; }
+  .case-chip.case-ac { border-color: #4c9a5f; }
+  .case-chip.case-ac .case-result { color: #29623b; background: #e3f3e5; }
+  .case-chip.case-wa { border-color: #d1503a; }
+  .case-chip.case-wa .case-result { color: #a23a26; background: #fbe6e1; }
+  .case-chip.case-other { border-color: #d78a3a; }
+  .case-chip.case-other .case-result { color: #a2621c; background: #fbedd9; }
   .status-ac { color: #3c7954 !important; }
   .status-fail { color: #bc6544 !important; }
-  .sidebar-footer { display: flex; align-items: center; gap: 7px; padding: 11px 16px; border-top: 1px solid #e5e9e3; color: #78847a; font-size: 10px; }
+  .status-toolchain { color: #8a958b; }
+  .status-toolchain.ready { color: #4c7a55; }
   .compiler-dot { width: 7px; height: 7px; border-radius: 50%; background: #82a875; box-shadow: 0 0 0 3px #82a87520; }
   .empty-note { margin: 5px 8px; color: #929d93; font-size: 11px; line-height: 1.6; }
-  .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3; grid-row: 1; border-right: 1px solid #e1e6df; }
+  .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 1; grid-row: 1; border-right: 1px solid #e1e6df; }
   .editor-tabbar { display: flex; height: 39px; flex: 0 0 39px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e5e9e3; background: #f8faf6; }
   .active-file-tab { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 2px solid #52775c; color: #3f5446; font-size: 11px; }
   .active-file-tab span { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }
@@ -711,9 +741,21 @@ int main() {
   .editor-status .clangd-status { overflow: hidden; max-width: 38%; text-overflow: ellipsis; white-space: nowrap; }
   .editor-status .clangd-status.ready { color: #4c7a55; }
   .editor-status .clangd-status.unavailable { color: #ae5c3e; }
-  .test-panel { display: flex; min-height: 0; flex-direction: column; grid-column: 5; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
+  .case-sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 3; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
   .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .panel-title-row h2 { margin: 3px 0 0; color: #304137; font-size: 14px; font-weight: 680; }
+  .panel-title-row h2 small { margin-left: 4px; color: #a0aaa0; font-size: 10px; font-weight: 550; }
+  .modal-title-row { display: flex; align-items: center; justify-content: space-between; }
+  .modal-close { color: #8a958a; }
+  .test-manager-modal h2 { margin: 12px 0 16px; color: #2f4236; font-size: 18px; }
+  .test-manager-body { display: grid; min-height: 0; flex: 1; grid-template-columns: 1.5fr 1fr; gap: 26px; overflow: hidden; }
+  .test-manager-editor { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: auto; }
+  .test-manager-editor .case-textarea { min-height: 240px; }
+  .test-manager-editor .expected-area { min-height: 190px; }
+  .test-manager-list { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding-left: 24px; border-left: 1px solid #e4e9e2; overflow: hidden; }
+  .test-manager-list .panel-title-row { margin-bottom: 11px; }
+  .test-manager-list .case-list { min-height: 0; flex: 1; }
+  .test-manager-list .case-chip { min-height: 40px; }
   .run-case-button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid #dce5da; border-radius: 5px; color: #416949; background: #eff5ec; cursor: pointer; }
   .run-case-button:hover { background: #e3eddf; }
   .case-name-row { display: flex; align-items: center; gap: 4px; margin-bottom: 10px; }
@@ -726,15 +768,14 @@ int main() {
   .case-result-row { display: flex; min-height: 30px; align-items: center; gap: 8px; color: #879187; font-size: 10px; }
   .result-pill { padding: 3px 7px; border-radius: 3px; background: #edf4ea; font-size: 9px; font-weight: 800; }
   .result-placeholder { color: #9aa39a; }
-  .console-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3 / 6; grid-row: 3; border-top: 1px solid #e1e6df; background: #fbfcf9; }
+  .console-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 1 / 4; grid-row: 3; border-top: 1px solid #e1e6df; background: #fbfcf9; }
   .splitter { z-index: 2; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 0; border: 0; appearance: none; background: transparent; touch-action: none; user-select: none; }
   .splitter span { flex: 0 0 auto; border-radius: 2px; background: #cdd6cc; transition: background-color .12s ease, width .12s ease, height .12s ease; }
   .splitter:hover span, .splitter:focus-visible span, .workbench.resizing .splitter span { background: #b96a45; }
   .splitter:focus-visible { outline: 2px solid #b96a45; outline-offset: -1px; }
-  .splitter-sidebar { grid-column: 2; grid-row: 1 / 4; cursor: col-resize; }
-  .splitter-sidebar span, .splitter-main span { width: 2px; height: 34px; }
-  .splitter-main { grid-column: 4; grid-row: 1; cursor: col-resize; }
-  .splitter-console { grid-column: 3 / 6; grid-row: 2; cursor: row-resize; }
+  .splitter-main span { width: 2px; height: 34px; }
+  .splitter-main { grid-column: 2; grid-row: 1; cursor: col-resize; }
+  .splitter-console { grid-column: 1 / 4; grid-row: 2; cursor: row-resize; }
   .splitter-console span { width: 34px; height: 2px; }
   .workbench.resizing, .workbench.resizing * { user-select: none; }
   .console-header { display: flex; min-height: 38px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e8ece6; background: #f8faf6; }
@@ -769,23 +810,27 @@ int main() {
   .project-modal label { color: #657268; font-size: 10px; font-weight: 700; }
   .project-modal input { height: 36px; padding: 0 10px; border: 1px solid #dce4da; border-radius: 4px; outline: none; color: #34463a; background: white; }
   .project-modal input:focus { border-color: #86a282; box-shadow: 0 0 0 2px #dfeadd; }
+  .test-manager-modal {position: relative;box-sizing: border-box;width: 880px;min-width: 0;max-width: calc(100% - 40px);height: 660px;max-height: calc(100% - 40px);margin: 0;}
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
   .modal-actions button { min-height: 32px; padding: 0 11px; border: 1px solid #dce3da; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 650; }
   .cancel-button { color: #5d6c61; background: #fff; }
   .confirm-button { border-color: #315841 !important; color: white; background: #315841; }
   @media (max-width: 980px) {
     .app-shell { min-height: 780px; }
-    .workbench { grid-template-columns: var(--sidebar-width) 6px minmax(280px, 1fr); grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(180px, var(--test-height)) 6px minmax(150px, var(--console-height)); }
-    .sidebar { grid-column: 1; grid-row: 1 / 6; }
-    .editor-panel { grid-column: 3; grid-row: 1; }
-    .test-panel { grid-column: 3; grid-row: 3; border-top: 1px solid #e1e6df; }
-    .console-panel { grid-column: 3; grid-row: 5; }
-    .splitter-sidebar { grid-column: 2; grid-row: 1 / 6; }
-    .splitter-main { grid-column: 3; grid-row: 2; cursor: row-resize; }
+    .workbench { grid-template-columns: minmax(280px, 1fr); grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(180px, var(--test-height)) 6px minmax(150px, var(--console-height)); }
+    .editor-panel { grid-column: 1; grid-row: 1; }
+    .case-sidebar { grid-column: 1; grid-row: 3; border-top: 1px solid #e1e6df; border-left: 0; }
+    .console-panel { grid-column: 1; grid-row: 5; }
+    .splitter-main { grid-column: 1; grid-row: 2; cursor: row-resize; }
     .splitter-main span { width: 34px; height: 2px; }
-    .splitter-console { grid-column: 3; grid-row: 4; }
+    .splitter-console { grid-column: 1; grid-row: 4; }
     .case-textarea { min-height: 45px; }
     .expected-area { min-height: 40px; }
+    .test-manager-modal { width: min(94vw, 560px); height: auto; max-height: 92vh; padding: 22px; }
+    .test-manager-body { grid-template-columns: 1fr; overflow: auto; }
+    .test-manager-list { min-height: 160px; padding-left: 0; padding-top: 14px; border-left: 0; border-top: 1px solid #e4e9e2; }
+    .test-manager-editor .case-textarea { min-height: 90px; }
+    .test-manager-editor .expected-area { min-height: 70px; }
   }
   @media (max-width: 740px) {
     :global(html), :global(body) { min-width: 360px; }
@@ -803,18 +848,12 @@ int main() {
     .run-actions { gap: 4px; }
     .timeout-field { padding: 0 4px; }
     .compile-button, .run-button, .test-button, .stop-button { gap: 4px; padding: 0 7px; font-size: 10px; }
-    .workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); overflow: visible; }
-    .sidebar { min-height: 0; max-height: none; grid-column: 1; grid-row: 1; border-right: 0; border-bottom: 1px solid #e1e6df; }
-    .files-section { min-height: 90px; }
-    .cases-section { min-height: 45px; max-height: 75px; }
-    .sidebar-footer { display: none; }
-    .editor-panel { min-height: 0; grid-column: 1; grid-row: 3; border-right: 0; }
-    .test-panel { min-height: 0; grid-column: 1; grid-row: 5; border-top: 1px solid #e1e6df; }
-    .console-panel { min-height: 0; grid-column: 1; grid-row: 7; border-top: 1px solid #e1e6df; }
-    .splitter-sidebar { grid-column: 1; grid-row: 2; cursor: row-resize; }
-    .splitter-sidebar span { width: 34px; height: 2px; }
-    .splitter-main { grid-column: 1; grid-row: 4; }
-    .splitter-console { grid-column: 1; grid-row: 6; }
+    .workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); overflow: visible; }
+    .editor-panel { min-height: 0; grid-column: 1; grid-row: 1; border-right: 0; }
+    .case-sidebar { min-height: 0; grid-column: 1; grid-row: 3; border-top: 1px solid #e1e6df; border-left: 0; }
+    .console-panel { min-height: 0; grid-column: 1; grid-row: 5; border-top: 1px solid #e1e6df; }
+    .splitter-main { grid-column: 1; grid-row: 2; }
+    .splitter-console { grid-column: 1; grid-row: 4; }
     .statusbar { gap: 10px; }
     .status-project { max-width: 68%; }
   }
