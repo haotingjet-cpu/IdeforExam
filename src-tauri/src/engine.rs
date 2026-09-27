@@ -173,9 +173,16 @@ pub fn compiler_path() -> Option<PathBuf> {
 }
 
 fn compiler_command() -> Command {
-    compiler_path()
+    let mut command = compiler_path()
         .map(Command::new)
-        .unwrap_or_else(|| Command::new("g++"))
+        .unwrap_or_else(|| Command::new("g++"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 pub fn run_program(

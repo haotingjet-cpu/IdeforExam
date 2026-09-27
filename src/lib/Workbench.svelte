@@ -73,12 +73,14 @@
     }
   }
 
-  const starterCode = `#include <iostream>
+  const starterCode = `#include <bits/stdc++.h>
+using namespace std;
 
 int main() {
+    cin.tie(nullptr)->sync_with_stdio(false);
     int value;
-    std::cin >> value;
-    std::cout << value * value << '\\n';
+    cin >> value;
+    cout << value;
     return 0;
 }`;
   const storageKey = "ideforexam.test-cases.v1";
@@ -100,7 +102,7 @@ int main() {
   let filePaths = $state<string[]>([]);
   let activePath = $state("");
   let dirty = $state(false);
-  let testCases = $state<TestCase[]>([{ id: "sample", name: "平方測試", input: "5\n", expectedOutput: "25\n" }]);
+  let testCases = $state<TestCase[]>([{ id: "sample", name: "輸入輸出", input: "5\n", expectedOutput: "5\n" }]);
   let activeTestId = $state("sample");
   let activeTest = $derived(testCases.find((testCase) => testCase.id === activeTestId));
   let timeoutMs = $state(2000);

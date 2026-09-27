@@ -74,6 +74,13 @@ impl LspManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         if let Some(compiler) = crate::engine::compiler_path() {
             command.arg(format!("--query-driver={}", compiler.display()));
         }
