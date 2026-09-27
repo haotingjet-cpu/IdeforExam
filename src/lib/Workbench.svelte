@@ -462,7 +462,7 @@ int main() {
   function persistTests() { void localforage.setItem(storageKey, $state.snapshot(testCases)); }
   function addTestCase() {
     const id = crypto.randomUUID();
-    testCases = [...testCases, { id, name: `測資 ${testCases.length + 1}`, input: "", expectedOutput: "" }];
+    testCases = [...testCases, { id, name: "", input: "", expectedOutput: "" }];
     activeTestId = id;
     persistTests();
     showTestManager = true;
@@ -580,7 +580,7 @@ int main() {
       <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
     <aside class="case-sidebar">
-      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測試案例 <small>{testCases.length}</small></h2></div><button class="mini-icon" title="測資編輯主控台" aria-label="測資編輯主控台" onclick={openTestManager}><Settings2 size={15} /></button></div>
+      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="mini-icon" title="測資編輯器" aria-label="測資編輯器" onclick={openTestManager}><Settings2 size={15} /></button></div>
       {#if testCases.length}
         <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
           <button
@@ -592,7 +592,7 @@ int main() {
             onclick={() => activeTestId = testCase.id}
             title={`檢視 ${testCase.name}`}
           >
-            <span class="case-index">#{String(index + 1).padStart(2, "0")}</span>
+            <span class="case-index">#{String(index + 1).padStart(2, "0")} {#if testCase.name != ""}<strong>{testCase.name}</strong>{/if}</span>
             <span class="case-result">{testCase.status ?? "—"}</span>
           </button>
           <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
@@ -626,12 +626,12 @@ int main() {
     <div class="modal-icon"><Code2 size={19} /></div>
     <button type="button" class="mini-icon modal-close" title="關閉" aria-label="關閉" onclick={closeTestManager}><CircleX size={18} /></button>
   </div>
-  <h2 id="test-manager-title">測資編輯主控台</h2>
+  <h2 id="test-manager-title">測資編輯器</h2>
   <div class="test-manager-body">
     <div class="test-manager-editor">
       {#if activeTest}
         <div class="case-name-row">
-          <input class="case-name" value={activeTest.name} aria-label="測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
+          <input class="case-name" value={activeTest.name} aria-label="測資名稱" placeholder="測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
           <button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== ""} title="執行目前測資"><Play size={14} fill="currentColor" /></button>
           <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button>
         </div>
@@ -643,9 +643,9 @@ int main() {
       {/if}
     </div>
     <aside class="test-manager-list">
-      <div class="panel-title-row"><h2>測試案例 <small>{testCases.length}</small></h2><button class="mini-icon" title="新增測資" aria-label="新增測資" onclick={addTestCase}><CirclePlus size={15} /></button></div>
+      <div class="panel-title-row"><h2>測資列表 <small>len: {testCases.length}</small></h2><button class="mini-icon" title="新增測資" aria-label="新增測資" onclick={addTestCase}><CirclePlus size={15} /></button></div>
       {#if testCases.length}
-        <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
+        <ul class="case-list">{#each testCases as testCase, index(testCase.id)}<li class="case-row">
           <button
             class="case-chip"
             class:case-ac={testCase.status === "AC"}
@@ -655,7 +655,7 @@ int main() {
             onclick={() => activeTestId = testCase.id}
             title={`編輯 ${testCase.name}`}
           >
-            <span class="case-index">#{String(index + 1).padStart(2, "0")}</span>
+            <span class="case-index">#{String(index + 1).padStart(2, "0")} {#if testCase.name != ""}<strong>{testCase.name}</strong>{/if}</span>
             <span class="case-result">{testCase.status ?? "—"}</span>
           </button>
           <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
