@@ -182,18 +182,17 @@ int main() {
       parent: editorElement
     });
 
-    const storedTests = localStorage.getItem(storageKey);
-    if (storedTests) {
-      try {
-        const parsed = JSON.parse(storedTests) as TestCase[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
+    localforage.getItem<TestCase[]>(storageKey)
+      .then((parsed) => {
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
           testCases = parsed;
           activeTestId = parsed[0].id;
         }
-      } catch {
-        localStorage.removeItem(storageKey);
-      }
-    }
+      })
+      .catch((error) => {
+        console.error("讀取測資失敗:", error);
+      });
+
     return () => {
       window.removeEventListener("resize", updateViewportMode);
       closeLanguageServer();
@@ -474,7 +473,7 @@ int main() {
     try { await invoke("cancel_run", { runId: activeRunId }); }
     catch (error) { setNotice(String(error), "error"); }
   }
-  function persistTests() { localStorage.setItem(storageKey, JSON.stringify(testCases)); }
+  function persistTests() { void localforage.setItem(storageKey, $state.snapshot(testCases)); }
   function addTestCase() {
     const id = crypto.randomUUID();
     testCases = [...testCases, { id, name: `測資 ${testCases.length + 1}`, input: "", expectedOutput: "" }];

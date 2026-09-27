@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ideforexam",
+  "productName": "IdeforExam",
   "version": "0.1.0",
   "identifier": "com.haoti.ideforexam",
   "build": {
