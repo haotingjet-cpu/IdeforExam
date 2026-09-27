@@ -681,7 +681,8 @@ int main() {
   .project-heading { display: flex; min-width: 0; align-items: center; gap: 9px; padding-left: 19px; border-left: 1px solid #e0e5df; }
   .eyebrow { display: block; color: #879287; font-size: 9px; font-weight: 750; }
   .project-heading strong { overflow: hidden; max-width: 42vw; color: #34443a; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .dirty-dot, .file-dirty { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #c56b40; }
+  .dirty-dot, 
+  /*.file-dirty { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #c56b40; }*/
   .top-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
   .icon-button, .mini-icon { display: grid; place-items: center; border: 0; background: transparent; color: #68776d; cursor: pointer; }
   .icon-button { width: 32px; height: 32px; border-radius: 5px; }
