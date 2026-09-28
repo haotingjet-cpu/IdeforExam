@@ -24,6 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "licenseFile": "../LICENSE", 
     "resources": {
       "../resources/mingw64.zip": "resources/mingw64.zip",
       "../resources/clangd_22.1.6.zip": "resources/clangd_22.1.6.zip"

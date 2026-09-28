@@ -428,6 +428,22 @@ int main() {
       return true;
     } catch (error) { setNotice(String(error), "error"); return false; }
   }
+
+  function handleGlobalKeydown(event: KeyboardEvent) {
+    const isSaveShortcut =
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === "s";
+
+    if (!isSaveShortcut) return;
+
+    event.preventDefault();
+
+    if (!hasFile || busy !== "" || event.repeat) return;
+
+    void saveCurrent();
+  }
   async function compileCurrent(): Promise<boolean> {
     if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return false; }
     if (!(await saveCurrent())) return false;
@@ -556,6 +572,7 @@ int main() {
   <title>競程工作台 · IDE for Exam</title>
   <meta name="description" content="Windows 本機 C++ 編輯、編譯與測資判題工作台" />
 </svelte:head>
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="app-shell">
   <header class="topbar">
