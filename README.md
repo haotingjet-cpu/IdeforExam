@@ -39,11 +39,9 @@ Rust 測試：
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml
-```
+``
 
-IDE 會自動搜尋工作區或應用程式附近的 `mingw64/bin/g++.exe`，也會使用 PATH 中的 `g++`。若仍顯示找不到編譯器，可將含有 `g++.exe` 的目錄加入 PATH，或設定 `IDEFOREXAM_GXX` 指向完整執行檔路徑。
-
-IntelliSense 會優先搜尋 `clangd_22.1.6/bin/clangd.exe`，並回退至 `clangd_18.1.3/bin/clangd.exe` 或 PATH 中的 clangd；也可用 `IDEFOREXAM_CLANGD` 指定完整路徑。IDE 會依專案中的 C++ 原始碼建立暫存 C++17 compilation database，並以偵測到的 G++ 查詢 MinGW 標準函式庫路徑。
+g++ 和 clangd 已經內建在 IDE 中，無須依賴任何畚箕編譯器，以減少配置問題
 
 ## 技術組成
 
