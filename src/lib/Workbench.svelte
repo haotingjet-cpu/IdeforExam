@@ -93,6 +93,7 @@ int main() {
   let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
   const lspCompartment = new Compartment();
+  const editableCompartment = new Compartment();
   let lspTransport: TauriLspTransport | undefined;
   let languageClient: LanguageServerClient | undefined;
   let lspSession: LspSessionInfo | undefined;
@@ -100,10 +101,11 @@ int main() {
   let toolchainsReady = $state(false);
   let toolchainStatus = $state("正在檢查 C++ 工具鏈...");
   let toolchainInitialization: Promise<ToolchainInfo>;
-  let source = $state(starterCode);
+  let source = $state("");
   let projectPath = $state("");
   let filePaths = $state<string[]>([]);
   let activePath = $state("");
+  let hasFile = $derived(activePath !== "");
   let dirty = $state(false);
   let testCases = $state<TestCase[]>([{ id: "sample", name: "輸入輸出", input: "5\n", expectedOutput: "5\n" }]);
   let activeTestId = $state("sample");
@@ -161,6 +163,7 @@ int main() {
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
           lspCompartment.of([]),
+          editableCompartment.of(editableExtensions(false)),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               source = update.state.doc.toString();
@@ -202,10 +205,21 @@ int main() {
     };
   });
 
+  function editableExtensions(editable: boolean) {
+    return [EditorView.editable.of(editable), EditorState.readOnly.of(!editable)];
+  }
   function setEditorContent(content: string) {
     source = content;
-    editorView?.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: content } });
+    editorView?.dispatch({
+      changes: { from: 0, to: editorView.state.doc.length, insert: content },
+      effects: editableCompartment.reconfigure(editableExtensions(activePath !== ""))
+    });
     dirty = false;
+  }
+  function clearEditor() {
+    activePath = "";
+    setEditorContent("");
+    closeLanguageServer();
   }
   function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
   async function connectLanguageServer(path: string) {
@@ -357,16 +371,14 @@ int main() {
       await refreshFiles(selected);
       if (filePaths.length) await loadFile(filePaths[0], true);
       else {
-        activePath = "";
-        setEditorContent(starterCode);
-        closeLanguageServer();
+        clearEditor();
         setNotice("專案已開啟，新增一個 C++ 檔案開始撰寫");
       }
     } catch (error) { setNotice(String(error), "error"); }
   }
   async function openSourceFile() {
     try {
-      const selected = await open({ multiple: false, filters: [{ name: "C++ 原始碼", extensions: ["cpp", "cc", "cxx", "h", "hpp"] }] });
+      const selected = await open({ multiple: false, defaultPath: projectPath || undefined, filters: [{ name: "C++ 原始碼", extensions: ["cpp", "cc", "cxx", "h", "hpp"] }] });
       if (typeof selected !== "string") return;
       projectPath = selected.replace(/[\\/][^\\/]+$/, "");
       await loadFile(selected);
@@ -387,29 +399,28 @@ int main() {
       setNotice("專案已建立", "success");
     } catch (error) { setNotice(String(error), "error"); }
   }
-  function newSourceFile() {
+  async function newSourceFile() {
     if (!confirmDiscardChanges()) return;
-    activePath = "";
-    setEditorContent(starterCode);
-    closeLanguageServer();
-    setNotice("新檔案尚未儲存");
+    try {
+      const selected = await save({
+        title: "新增 C++ 檔案",
+        defaultPath: projectPath ? joinPath(projectPath, "main.cpp") : "main.cpp",
+        filters: [{ name: "C++ 原始碼", extensions: ["cpp"] }]
+      });
+      if (!selected) { setNotice("已取消新增檔案"); return; }
+      const path = /\.(cpp|cc|cxx|h|hpp)$/i.test(selected) ? selected : `${selected}.cpp`;
+      await invoke("save_source", { path, content: starterCode });
+      if (!projectPath || !path.startsWith(projectPath)) projectPath = path.replace(/[\\/][^\\/]+$/, "");
+      await refreshFiles();
+      await loadFile(path, true);
+      setNotice(`已建立 ${relativeFile(path)}`, "success");
+    } catch (error) { setNotice(String(error), "error"); }
   }
   async function saveCurrent(): Promise<boolean> {
-    let path = activePath;
-    if (!path) {
-      try {
-        const selected = await save({
-          defaultPath: projectPath ? joinPath(projectPath, "main.cpp") : "main.cpp",
-          filters: [{ name: "C++ 原始碼", extensions: ["cpp"] }]
-        });
-        if (!selected) return false;
-        path = selected;
-      } catch (error) { setNotice(String(error), "error"); return false; }
-    }
+    const path = activePath;
+    if (!path) { setNotice("請先新增或開啟檔案", "error"); return false; }
     try {
       await invoke("save_source", { path, content: source });
-      activePath = path;
-      projectPath = path.replace(/[\\/][^\\/]+$/, "");
       dirty = false;
       await refreshFiles();
       await connectLanguageServer(path);
@@ -554,20 +565,20 @@ int main() {
       <button class="icon-button" title="建立專案" aria-label="建立專案" onclick={() => showNewProject = true}><FolderPlus size={17} /></button>
       <button class="icon-button" title="開啟專案資料夾" aria-label="開啟專案資料夾" onclick={openProject}><FolderOpen size={17} /></button>
       <span class="top-divider"></span>
-      <button class="save-button" onclick={saveCurrent} disabled={busy !== ""}><Save size={15} />儲存</button>
+      <button class="save-button" onclick={saveCurrent} disabled={busy !== "" || !hasFile}><Save size={15} />儲存</button>
     </div>
   </header>
   <div class="actionbar">
     <div class="file-actions">
       <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
       <button class="text-action" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
-      <button class="text-action" onclick={saveCurrent}><Save size={15} />儲存檔案</button>
+      <button class="text-action" onclick={saveCurrent} disabled={!hasFile}><Save size={15} />儲存檔案</button>
     </div>
     <div class="run-actions">
       <label class="timeout-field" title="程式逾時上限"><Clock3 size={14} /><input type="number" min="100" max="300000" step="100" bind:value={timeoutMs} aria-label="執行逾時毫秒" /><span>ms</span></label>
-      <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady}><Settings2 size={15} />編譯</button>
-      <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady}><Play size={15} fill="currentColor" />執行</button>
-      <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady}><CircleCheck size={15} />全部測試</button>
+      <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady || !hasFile}><Settings2 size={15} />編譯</button>
+      <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady || !hasFile}><Play size={15} fill="currentColor" />執行</button>
+      <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady || !hasFile}><CircleCheck size={15} />全部測試</button>
       {#if activeRunId && (busy === "run" || busy === "test")}<button class="stop-button" onclick={stopCurrentRun}><Square size={13} fill="currentColor" />停止</button>{/if}
     </div>
   </div>
@@ -578,9 +589,22 @@ int main() {
     style={`--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px`}
   >
     <section class="editor-panel" bind:this={editorPanelElement}>
-      <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "untitled.cpp"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
-      <div class="editor-host" bind:this={editorElement}></div>
-      <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "未儲存"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
+      <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "尚未開啟檔案"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
+      <div class="editor-wrap">
+        <div class="editor-host" bind:this={editorElement}></div>
+        {#if !hasFile}
+          <div class="editor-empty">
+            <FileCode2 size={30} />
+            <strong>尚未開啟任何檔案</strong>
+            <p>新增檔案時需先選擇儲存位置，儲存後即可開始編輯。</p>
+            <div class="editor-empty-actions">
+              <button type="button" class="empty-primary" onclick={newSourceFile}><CirclePlus size={15} />新增檔案</button>
+              <button type="button" class="empty-secondary" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
+            </div>
+          </div>
+        {/if}
+      </div>
+      <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "無檔案"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
     <aside class="case-sidebar">
       <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="mini-icon" title="測資編輯器" aria-label="測資編輯器" onclick={openTestManager}><Settings2 size={15} /></button></div>
@@ -635,7 +659,7 @@ int main() {
       {#if activeTest}
         <div class="case-name-row">
           <input class="case-name" value={activeTest.name} aria-label="測資名稱" placeholder="測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
-          <button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== ""} title="執行目前測資"><Play size={14} fill="currentColor" /></button>
+          <button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== "" || !hasFile} title="執行目前測資"><Play size={14} fill="currentColor" /></button>
           <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button>
         </div>
         <label class="code-field-label" for="test-input">STANDARD INPUT</label><textarea id="test-input" class="case-textarea" value={activeTest.input} oninput={(event) => updateTest(activeTest.id, "input", event.currentTarget.value)} spellcheck="false"></textarea>
@@ -739,7 +763,18 @@ int main() {
   .active-file-tab :global(svg) { flex: 0 0 auto; color: #758e76; }
   .active-file-tab i { width: 6px; height: 6px; border-radius: 50%; background: #c56b40; }
   .editor-shortcut { display: flex; align-items: center; gap: 5px; padding: 0 12px; color: #9aa39a; font-size: 10px; }
+  .editor-wrap { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }
   .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
+  .editor-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: #6b7a70; background: #fbfcf9; }
+  .editor-empty :global(svg) { color: #9aae9c; }
+  .editor-empty strong { color: #34443a; font-size: 14px; font-weight: 650; }
+  .editor-empty p { margin: 0; font-size: 12px; }
+  .editor-empty-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .editor-empty-actions button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px; border: 1px solid #dce2da; border-radius: 4px; cursor: pointer; }
+  .empty-primary { color: #fff; border-color: #315841 !important; background: #315841; }
+  .empty-primary:hover { background: #3a684d; }
+  .empty-secondary { color: #43564a; background: #fff; }
+  .empty-secondary:hover { background: #f0f3ee; }
   .editor-status { display: flex; height: 25px; flex: 0 0 25px; align-items: center; justify-content: flex-end; gap: 15px; padding: 0 13px; border-top: 1px solid #e9ede7; color: #8a958b; background: #f8faf6; font-size: 9px; }
   .editor-status span:first-child { overflow: hidden; max-width: 48%; margin-right: auto; text-overflow: ellipsis; white-space: nowrap; }
   .editor-status .clangd-status { overflow: hidden; max-width: 38%; text-overflow: ellipsis; white-space: nowrap; }

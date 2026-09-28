@@ -191,10 +191,18 @@ pub fn run_program(
     timeout_ms: u64,
     cancellation: Arc<AtomicBool>,
 ) -> Result<RunResult, String> {
-    let mut child = Command::new(executable_path)
+    let mut command = Command::new(executable_path);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| format!("無法執行程式：{error}"))?;
 
@@ -229,6 +237,8 @@ pub fn run_program(
         thread::sleep(Duration::from_millis(10));
     };
 
+    let execution_time_ms = start.elapsed().as_millis();
+
     let _ = input_thread.join();
     let stdout = join_reader(stdout_thread)?;
     let stderr = join_reader(stderr_thread)?;
@@ -236,7 +246,7 @@ pub fn run_program(
     Ok(RunResult {
         stdout,
         stderr,
-        execution_time_ms: start.elapsed().as_millis(),
+        execution_time_ms,
         exit_code: status.and_then(|status| status.code()),
         timed_out,
         cancelled,
