@@ -5,14 +5,14 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { Compartment, EditorState } from "@codemirror/state";
-  import { EditorView, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
+  import { EditorView, highlightActiveLineGutter, keymap, lineNumbers, runScopeHandlers, type Panel, type ViewUpdate } from "@codemirror/view";
   import { bracketMatching, defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting, syntaxTree } from "@codemirror/language";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
-  import { searchKeymap } from "@codemirror/search";
+  import { SearchQuery, closeSearchPanel, findNext, findPrevious, getSearchQuery, replaceAll, replaceNext, search, searchKeymap, setSearchQuery } from "@codemirror/search";
   import localforage from "localforage";
   import { LanguageServerClient, languageServerWithTransport, type Transport } from "codemirror-languageserver";
-  import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
+  import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
 
   type ResultStatus = "AC" | "WA" | "RE" | "TLE";
   type ConsoleTab = "output" | "build" | "diff";
@@ -209,7 +209,26 @@
   let showDiffMarks = $state(false);
   let notice = $state("準備就緒");
   let noticeTone = $state("neutral");
-  let showNewProject = $state(false);
+  // 介面模式（簡易狀態機）：同一時間只會處於其中一個模式。
+  // 擴充方式：在 UiMode 加入新名稱，再視需要在 uiModeHooks 補上進入 / 離開該模式時要做的事。
+  type UiMode = "code" | "tests" | "newProject";
+  const uiModeHooks: Partial<Record<UiMode, { enter?: () => void; leave?: () => void }>> = {
+    // 離開「編輯程式」時收起 Ctrl+F 搜尋框（查詢內容仍保留，回來再按 Ctrl+F 即可）。
+    code: { leave: () => { if (editorView) closeSearchPanel(editorView); } }
+  };
+  let uiMode = $state<UiMode>("code");
+  let showNewProject = $derived(uiMode === "newProject");
+  let showTestManager = $derived(uiMode === "tests");
+  function enterMode(next: UiMode) {
+    if (uiMode === next) return;
+    uiModeHooks[uiMode]?.leave?.();
+    uiMode = next;
+    uiModeHooks[next]?.enter?.();
+  }
+  // 只有目前正處於該模式時才回到「編輯程式」，避免誤關其他模式。
+  function exitMode(mode: UiMode) {
+    if (uiMode === mode) enterMode("code");
+  }
   let projectName = $state("");
   let sidebarWidth = $state(205);
   let testWidth = $state(280);
@@ -222,7 +241,6 @@
   let diffResize = $state<{ index: number; pointerId: number } | null>(null);
   let diffColumnsElement = $state<HTMLElement | undefined>();
   const minDiffCol = 0.12;
-  let showTestManager = $state(false);
   let appWindow: ReturnType<typeof getCurrentWindow> | undefined;
   let isMaximized = $state(false);
   let viewportMode = $state<"desktop" | "stacked" | "mobile">("desktop");
@@ -274,6 +292,7 @@
         doc: source,
         extensions: [
           lineNumbers(), highlightActiveLineGutter(), history(), indentOnInput(), bracketMatching(), cpp(),
+          search({ top: true, createPanel: createSearchPanel }),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
           indentUnit.of("    "),
@@ -297,7 +316,33 @@
             ".cm-activeLine": { backgroundColor: "#f7f8f5" },
             "&.cm-focused": { outline: "none" },
             ".cm-cursor": { borderLeftColor: "#c25c32" },
-            ".cm-selectionBackground, ::selection": { backgroundColor: "#d8e3d5 !important" }
+            ".cm-selectionBackground, ::selection": { backgroundColor: "#d8e3d5 !important" },
+            // 搜尋面板：浮動在編輯器右上角（VS Code 風格），不佔用文字區高度。
+            ".cm-panels": { position: "absolute", top: "0", right: "18px", left: "auto", width: "420px", maxWidth: "calc(100% - 26px)", background: "transparent !important", border: "none !important", color: "inherit", pointerEvents: "none", zIndex: "300" },
+            ".cm-panels-top": { border: "none !important" },
+            ".cm-vsc-search": { pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: "2px", width: "100%", padding: "6px 8px 6px 3px", border: "1px solid #dce2da", borderTop: "none", borderRadius: "0 0 5px 5px", background: "#f8faf6", boxShadow: "0 3px 10px rgba(38, 53, 45, 0.16)", color: "#26352d", fontFamily: "'Segoe UI Variable', 'Segoe UI', sans-serif", fontSize: "12px" },
+            ".cm-vsc-search button": { font: "inherit" },
+            ".cm-vsc-rows": { display: "flex", flex: "1", flexDirection: "column", gap: "4px", minWidth: "0" },
+            ".cm-vsc-row": { display: "flex", alignItems: "center", gap: "2px" },
+            ".cm-vsc-search:not(.replace-open) .cm-vsc-replace-row": { display: "none" },
+            ".cm-vsc-field": { position: "relative", flex: "1", minWidth: "0" },
+            ".cm-vsc-input": { width: "100%", height: "24px", padding: "0 6px", border: "1px solid #dce2da", borderRadius: "3px", background: "#fff", color: "inherit", font: "inherit", outline: "none" },
+            ".cm-vsc-input:focus": { borderColor: "#6f8f73" },
+            ".cm-vsc-find-input": { paddingRight: "74px" },
+            ".cm-vsc-field.no-match .cm-vsc-input": { borderColor: "#ae5c3e" },
+            ".cm-vsc-options": { position: "absolute", top: "0", right: "2px", bottom: "0", display: "flex", alignItems: "center", gap: "1px" },
+            ".cm-vsc-option, .cm-vsc-icon-btn, .cm-vsc-toggle-replace": { display: "inline-flex", flex: "0 0 auto", alignItems: "center", justifyContent: "center", padding: "0", border: "1px solid transparent", borderRadius: "3px", background: "transparent", color: "#55665b", cursor: "pointer" },
+            ".cm-vsc-option": { width: "22px", height: "20px", fontFamily: "'Cascadia Code', Consolas, monospace", fontSize: "11px" },
+            ".cm-vsc-icon-btn": { width: "24px", height: "24px" },
+            ".cm-vsc-toggle-replace": { alignSelf: "stretch", width: "16px" },
+            ".cm-vsc-toggle-replace svg": { transition: "transform 0.12s" },
+            ".cm-vsc-search.replace-open .cm-vsc-toggle-replace svg": { transform: "rotate(90deg)" },
+            ".cm-vsc-option:hover, .cm-vsc-icon-btn:hover, .cm-vsc-toggle-replace:hover": { background: "#e9eee8" },
+            ".cm-vsc-option.active": { borderColor: "#9db59f", background: "#d8e3d5", color: "#26352d" },
+            ".cm-vsc-search button:focus-visible": { outline: "1px solid #6f8f73", outlineOffset: "-1px" },
+            ".cm-vsc-count": { minWidth: "58px", padding: "0 4px", color: "#5e6f64", fontSize: "11px", textAlign: "center", whiteSpace: "nowrap" },
+            ".cm-vsc-text-btn": { height: "24px", padding: "0 8px", border: "1px solid #dce2da", borderRadius: "3px", background: "#fff", color: "#34443a", cursor: "pointer", whiteSpace: "nowrap" },
+            ".cm-vsc-text-btn:hover": { background: "#e9eee8" }
           })
         ]
       }),
@@ -323,6 +368,191 @@
       editorView?.destroy();
     };
   });
+
+  // Ctrl+F 搜尋面板：仿 VS Code 的右上角浮動樣式（尋找 / 取代、區分大小寫、全字比對、規則運算式）。
+  let searchReplaceOpen = false;
+  const svgIcon = (paths: string) => `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  const chevronIcon = svgIcon('<path d="m9 18 6-6-6-6"/>');
+  const arrowUpIcon = svgIcon('<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>');
+  const arrowDownIcon = svgIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
+  const closeIcon = svgIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
+
+  function createSearchPanel(view: EditorView): Panel {
+    let query = getSearchQuery(view.state);
+
+    const makeButton = (className: string, html: string, title: string, onClick: () => void) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.innerHTML = html;
+      // 避免點擊按鈕時輸入框失去焦點。
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", onClick);
+      return button;
+    };
+    const makeInput = (className: string, placeholder: string) => {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = className;
+      input.placeholder = placeholder;
+      input.setAttribute("aria-label", placeholder);
+      input.setAttribute("spellcheck", "false");
+      input.setAttribute("autocomplete", "off");
+      return input;
+    };
+
+    const dom = document.createElement("div");
+    dom.className = "cm-vsc-search";
+
+    const searchField = makeInput("cm-vsc-input cm-vsc-find-input", "尋找");
+    searchField.setAttribute("main-field", "true"); // 讓 openSearchPanel 能在面板已開啟時重新聚焦。
+    searchField.value = query.search;
+    const replaceField = makeInput("cm-vsc-input", "取代");
+    replaceField.value = query.replace;
+
+    let caseSensitive = query.caseSensitive;
+    let wholeWord = query.wholeWord;
+    let regexp = query.regexp;
+
+    const commit = () => {
+      const next = new SearchQuery({ search: searchField.value, replace: replaceField.value, caseSensitive, wholeWord, regexp });
+      if (!next.eq(query)) {
+        query = next;
+        view.dispatch({ effects: setSearchQuery.of(next) });
+      }
+    };
+
+    const makeOption = (label: string, title: string, get: () => boolean, set: (value: boolean) => void) => {
+      const button = makeButton("cm-vsc-option", label, title, () => {
+        set(!get());
+        syncOptions();
+        commit();
+      });
+      return { button, refresh: () => { button.classList.toggle("active", get()); button.setAttribute("aria-pressed", String(get())); } };
+    };
+    const caseOption = makeOption("Aa", "區分大小寫 (Alt+C)", () => caseSensitive, (value) => { caseSensitive = value; });
+    const wordOption = makeOption("ab", "全字拼寫比對 (Alt+W)", () => wholeWord, (value) => { wholeWord = value; });
+    const regexOption = makeOption(".*", "使用規則運算式 (Alt+R)", () => regexp, (value) => { regexp = value; });
+    const options = [caseOption, wordOption, regexOption];
+    const syncOptions = () => options.forEach((option) => option.refresh());
+    syncOptions();
+
+    const optionsBox = document.createElement("div");
+    optionsBox.className = "cm-vsc-options";
+    options.forEach((option) => optionsBox.append(option.button));
+
+    const findField = document.createElement("div");
+    findField.className = "cm-vsc-field";
+    findField.append(searchField, optionsBox);
+
+    const count = document.createElement("span");
+    count.className = "cm-vsc-count";
+    count.setAttribute("aria-live", "polite");
+
+    const findRow = document.createElement("div");
+    findRow.className = "cm-vsc-row";
+    findRow.append(
+      findField,
+      count,
+      makeButton("cm-vsc-icon-btn", arrowUpIcon, "上一個符合項目 (Shift+Enter)", () => { commit(); findPrevious(view); }),
+      makeButton("cm-vsc-icon-btn", arrowDownIcon, "下一個符合項目 (Enter)", () => { commit(); findNext(view); }),
+      makeButton("cm-vsc-icon-btn", closeIcon, "關閉 (Esc)", () => closeSearchPanel(view))
+    );
+
+    const replaceFieldBox = document.createElement("div");
+    replaceFieldBox.className = "cm-vsc-field";
+    replaceFieldBox.append(replaceField);
+
+    const replaceRow = document.createElement("div");
+    replaceRow.className = "cm-vsc-row cm-vsc-replace-row";
+    replaceRow.append(
+      replaceFieldBox,
+      makeButton("cm-vsc-text-btn", "取代", "取代 (Enter)", () => { commit(); replaceNext(view); }),
+      makeButton("cm-vsc-text-btn", "全部取代", "全部取代 (Ctrl+Alt+Enter)", () => { commit(); replaceAll(view); })
+    );
+
+    const rows = document.createElement("div");
+    rows.className = "cm-vsc-rows";
+    rows.append(findRow, replaceRow);
+
+    const toggleReplace = makeButton("cm-vsc-toggle-replace", chevronIcon, "切換取代", () => {
+      searchReplaceOpen = !searchReplaceOpen;
+      dom.classList.toggle("replace-open", searchReplaceOpen);
+    });
+    dom.classList.toggle("replace-open", searchReplaceOpen);
+    dom.append(toggleReplace, rows);
+
+    const updateCount = () => {
+      const current = getSearchQuery(view.state);
+      findField.classList.remove("no-match");
+      if (!current.search) { count.textContent = ""; return; }
+      if (!current.valid) { count.textContent = "無結果"; findField.classList.add("no-match"); return; }
+      const selection = view.state.selection.main;
+      const limit = 9999;
+      let total = 0;
+      let index = 0;
+      const cursor = current.getCursor(view.state);
+      for (let result = cursor.next(); !result.done; result = cursor.next()) {
+        total++;
+        if (result.value.from === selection.from && result.value.to === selection.to) index = total;
+        if (total >= limit) break;
+      }
+      if (total === 0) { count.textContent = "無結果"; findField.classList.add("no-match"); return; }
+      count.textContent = `${index || "?"} / ${total >= limit ? `${limit}+` : total}`;
+    };
+
+    searchField.addEventListener("input", commit);
+    replaceField.addEventListener("input", commit);
+    searchField.addEventListener("change", commit);
+    replaceField.addEventListener("change", commit);
+
+    dom.addEventListener("keydown", (event) => {
+      if (runScopeHandlers(view, event, "search-panel")) { event.preventDefault(); return; }
+      if (event.altKey && !event.ctrlKey && !event.metaKey) {
+        const option = event.code === "KeyC" ? caseOption : event.code === "KeyW" ? wordOption : event.code === "KeyR" ? regexOption : undefined;
+        if (option) { event.preventDefault(); option.button.click(); return; }
+      }
+      if (event.key !== "Enter" || event.isComposing) return;
+      if (event.target === searchField) {
+        event.preventDefault();
+        commit();
+        (event.shiftKey ? findPrevious : findNext)(view);
+      } else if (event.target === replaceField) {
+        event.preventDefault();
+        commit();
+        if (event.ctrlKey && event.altKey) replaceAll(view);
+        else replaceNext(view);
+      }
+    });
+
+    updateCount();
+
+    return {
+      dom,
+      top: true,
+      mount() { searchField.focus(); searchField.select(); },
+      update(update: ViewUpdate) {
+        let queryChanged = false;
+        for (const transaction of update.transactions) {
+          for (const effect of transaction.effects) {
+            if (effect.is(setSearchQuery) && !effect.value.eq(query)) {
+              query = effect.value;
+              queryChanged = true;
+              if (searchField.value !== query.search) searchField.value = query.search;
+              if (replaceField.value !== query.replace) replaceField.value = query.replace;
+              caseSensitive = query.caseSensitive;
+              wholeWord = query.wholeWord;
+              regexp = query.regexp;
+              syncOptions();
+            }
+          }
+        }
+        if (queryChanged || update.docChanged || update.selectionSet) updateCount();
+      }
+    };
+  }
 
   // 輸入 "{" 時自動展開成 "{\n    |\n}"；字串、註解內，或游標後方還有內容時維持一般輸入。
   function autoExpandBrace(view: EditorView, from: number, to: number, text: string) {
@@ -591,7 +821,7 @@
       if (typeof parent !== "string") return;
       projectPath = await invoke<string>("create_project", { parentPath: parent, name: projectName.trim() });
       projectName = "";
-      showNewProject = false;
+      exitMode("newProject");
       await refreshFiles();
       await loadFile(joinPath(projectPath, "main.cpp"));
       setNotice("專案已建立", "success");
@@ -693,7 +923,7 @@
     testCases = [...testCases, { id, name: "", input: "", expectedOutput: "" }];
     activeTestId = id;
     persistTests();
-    showTestManager = true;
+    enterMode("tests");
   }
   function removeTestCase(id: string) {
     if (testCases.length === 1) return;
@@ -702,10 +932,10 @@
     persistTests();
   }
   function openTestManager() {
-    showTestManager = true;
+    enterMode("tests");
   }
   function closeTestManager() {
-    showTestManager = false;
+    exitMode("tests");
   }
   function updateTest(id: string, field: "name" | "input" | "expectedOutput", value: string) {
     testCases = testCases.map((testCase) => testCase.id === id ? { ...testCase, [field]: value } : testCase);
@@ -782,7 +1012,7 @@
   </div>
   <div class="actionbar" data-tauri-drag-region>
     <div class="file-actions">
-      <button class="text-action" onclick={() => showNewProject = true}><FolderPlus size={15} />建立專案</button>
+      <button class="text-action" onclick={() => enterMode("newProject")}><FolderPlus size={15} />建立專案</button>
       <button class="text-action" onclick={openProject}><FolderOpen size={15} />開啟專案</button>
       <span class="action-divider"></span>
       <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
@@ -812,7 +1042,7 @@
     </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "尚未開啟檔案"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
-      <div class="editor-wrap">
+      <div class="editor-wrap" inert={uiMode !== "code"}>
         <div class="editor-host" bind:this={editorElement}></div>
         {#if !hasFile}
           <div class="editor-empty">
@@ -829,7 +1059,7 @@
       <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "無檔案"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
     <aside class="case-sidebar">
-      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="mini-icon" title="測資編輯器" aria-label="測資編輯器" onclick={openTestManager}><Settings2 size={15} /></button></div>
+      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="case-editor-button" title="開啟測資編輯器" aria-label="開啟測資編輯器" onclick={openTestManager}><Pencil size={13} />編輯測資</button></div>
       {#if testCases.length}
         <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
           <button
@@ -887,7 +1117,7 @@
 
 {#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
   <div class="modal-icon"><FolderPlus size={19} /></div><h2 id="new-project-title">建立 C++ 專案</h2><p>選擇儲存位置後，工作台會建立 main.cpp。</p>
-  <form onsubmit={createProject}><label for="project-name">專案名稱</label><input id="project-name" bind:value={projectName} placeholder="例如：apcs-practice" /><div class="modal-actions"><button type="button" class="cancel-button" onclick={() => showNewProject = false}>取消</button><button type="submit" class="confirm-button" disabled={!projectName.trim()}>選擇位置並建立</button></div></form>
+  <form onsubmit={createProject}><label for="project-name">專案名稱</label><input id="project-name" bind:value={projectName} placeholder="例如：apcs-practice" /><div class="modal-actions"><button type="button" class="cancel-button" onclick={() => exitMode("newProject")}>取消</button><button type="submit" class="confirm-button" disabled={!projectName.trim()}>選擇位置並建立</button></div></form>
 </dialog></div>{/if}
 
 {#if showTestManager}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeTestManager(); }}><dialog open class="project-modal test-manager-modal" aria-labelledby="test-manager-title">
@@ -1017,7 +1247,7 @@
   .active-file-tab :global(svg) { flex: 0 0 auto; color: #758e76; }
   .active-file-tab i { width: 6px; height: 6px; border-radius: 50%; background: #c56b40; }
   .editor-shortcut { display: flex; align-items: center; gap: 5px; padding: 0 12px; color: #9aa39a; font-size: 10px; }
-  .editor-wrap { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }
+  .editor-wrap { position: relative; isolation: isolate; display: flex; min-height: 0; flex: 1; flex-direction: column; }
   .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
   .editor-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: #6b7a70; background: #fbfcf9; }
   .editor-empty :global(svg) { color: #9aae9c; }
@@ -1037,6 +1267,9 @@
   .case-sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 5; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
   .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .panel-title-row h2 { margin: 3px 0 0; color: #304137; font-size: 14px; font-weight: 680; }
+  .case-editor-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid #315841; border-radius: 4px; color: #315841; background: #eef3ec; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+  .case-editor-button:hover { color: white; background: #315841; }
+  .case-editor-button:focus-visible { outline: 2px solid #6f8f73; outline-offset: 2px; }
   .panel-title-row h2 small { margin-left: 4px; color: #a0aaa0; font-size: 10px; font-weight: 550; }
   .modal-title-row { display: flex; align-items: center; justify-content: space-between; }
   .modal-close { color: #8a958a; }
