@@ -86,6 +86,7 @@ pub fn compile(source_path: &Path) -> Result<CompileResult, String> {
     let output = compiler_command()
         .arg(source_path)
         .arg("-std=c++17")
+        .arg("-static")
         .arg("-O2")
         .arg("-o")
         .arg(&executable_path)
