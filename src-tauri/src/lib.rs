@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod engine;
+mod get_toij;
 mod lsp;
 mod toolchains;
 
