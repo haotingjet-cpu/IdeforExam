@@ -1,25 +1,45 @@
 use scraper::{Html, Selector};
 
 #[derive(Debug, Clone)]
-struct ATiojProblem {
+struct ATiojProblemOption {
     description: Option<String>,
     input_format: Option<String>,
     output_format: Option<String>,
 }
-impl ATiojProblem {
-    const NONE: ATiojProblem = ATiojProblem {
+
+#[derive(serde::Serialize, Clone)]
+pub struct ATiojProblem {
+    description: String,
+    input_format: String,
+    output_format: String,
+}
+
+impl ATiojProblemOption {
+    const NONE: ATiojProblemOption = ATiojProblemOption {
         description: None,
         input_format: None,
         output_format: None,
     };
+}
 
-    fn get() -> Result<Self, Box<dyn std::error::Error>> {
-        let target_url = "https://tioj.ck.tp.edu.tw/problems/1005";
+impl From<ATiojProblemOption> for ATiojProblem {
+    fn from(v: ATiojProblemOption) -> ATiojProblem {
+        ATiojProblem {
+            description: v.description.unwrap(),
+            input_format: v.input_format.unwrap(),
+            output_format: v.output_format.unwrap(),
+        }
+    }
+}
 
-        println!("正在建立高擬真瀏覽器請求標頭...");
+impl ATiojProblem {
+    pub fn get(target_url: &str) -> Result<Self, String> {
+        println!("連線 tioj 題目中...");
 
         use std::process::Command;
-        let output = Command::new("curl").arg("-s").arg(target_url).output()?;
+        let Ok(output) = Command::new("curl").arg("-s").arg(target_url).output() else {
+            return Err("curl 命令建立失敗".into());
+        };
 
         if !output.status.success() {
             println!("curl 執行失敗");
@@ -38,7 +58,7 @@ impl ATiojProblem {
         let mut found_input_format = false;
         let mut found_output_format = false;
 
-        let mut problem = Self::NONE;
+        let mut problem = ATiojProblemOption::NONE;
 
         for panel in document.select(&panel_selector) {
             if let Some(title_element) = panel.select(&title_selector).next() {
@@ -117,9 +137,9 @@ impl ATiojProblem {
         }
 
         if !(found_description && found_input_format && found_output_format) {
-            Err("❌ 連線成功，但該網頁中沒有找到標題為 'Description' 的區塊。".into())
+            Err("連線成功，但網頁中關於題目的資訊不全".into())
         } else {
-            Ok(problem)
+            Ok(problem.into())
         }
     }
 }

@@ -5,83 +5,26 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { Compartment, EditorState } from "@codemirror/state";
-  import { EditorView, highlightActiveLineGutter, keymap, lineNumbers, runScopeHandlers, type Panel, type ViewUpdate } from "@codemirror/view";
-  import { bracketMatching, defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+  import { EditorView, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
+  import { bracketMatching, defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
-  import { SearchQuery, closeSearchPanel, findNext, findPrevious, getSearchQuery, replaceAll, replaceNext, search, searchKeymap, setSearchQuery } from "@codemirror/search";
+  import { closeSearchPanel, search, searchKeymap } from "@codemirror/search";
   import localforage from "localforage";
-  import { LanguageServerClient, languageServerWithTransport, type Transport } from "codemirror-languageserver";
+  import { LanguageServerClient, languageServerWithTransport } from "codemirror-languageserver";
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
 
-  type ResultStatus = "AC" | "WA" | "RE" | "TLE";
-  type ConsoleTab = "output" | "build" | "diff";
-  type ResizeKind = "sidebar" | "main" | "console";
-  interface TestCase {
-    id: string;
-    name: string;
-    input: string;
-    expectedOutput: string;
-    status?: ResultStatus;
-    actualOutput?: string;
-    stderr?: string;
-    executionTimeMs?: number;
-    firstDifference?: number | null;
-  }
-  interface CompileResult { success: boolean; output: string; executablePath: string | null }
-  interface RunResult { stdout: string; stderr: string; executionTimeMs: number; exitCode: number | null; timedOut: boolean; cancelled: boolean }
-  interface CompareResult { accepted: boolean; firstDifference: number | null }
-  interface LspSessionInfo {
-    sessionId: string;
-    eventName: string;
-    rootUri: string;
-    documentUri: string;
-    clangdPath: string;
-  }
-  interface ToolchainInfo { gxxPath: string; clangdPath: string; extracted: boolean }
+  import "./workbench/workbench.css";
+  import type { CompareResult, CompileResult, ConsoleTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo } from "./workbench/types";
+  import { layoutStorageKey, starterCode, storageKey } from "./workbench/constants";
+  import { clamp, joinPath } from "./workbench/utils";
+  import { buildDiff, gutterStyle, numberedLines } from "./workbench/diff";
+  import { TauriLspTransport } from "./workbench/lsp-transport";
+  import { createSearchPanel } from "./workbench/search-panel";
+  import { autoExpandBrace, editableExtensions } from "./workbench/editor-extensions";
+  import { editorTheme } from "./workbench/editor-theme";
 
-  class TauriLspTransport implements Transport {
-    private messageHandler: ((message: string) => void) | undefined;
-    private closeHandler: (() => void) | undefined;
-    private errorHandler: ((error: Error) => void) | undefined;
-    private unlisten: UnlistenFn | undefined;
-    private sessionId: string;
-    private sendQueue: Promise<void> = Promise.resolve();
 
-    constructor(sessionId: string) { this.sessionId = sessionId; }
-
-    setUnlisten(unlisten: UnlistenFn) { this.unlisten = unlisten; }
-    send(message: string) {
-      this.sendQueue = this.sendQueue
-        .then(() => invoke<void>("send_clangd", { sessionId: this.sessionId, message }))
-        .catch((error) => { this.errorHandler?.(new Error(String(error))); });
-    }
-    onMessage(callback: (message: string) => void) { this.messageHandler = callback; }
-    onClose(callback: () => void) { this.closeHandler = callback; }
-    onError(callback: (error: Error) => void) { this.errorHandler = callback; }
-    receive(message: string) {
-      if (message === "__clangd_closed__") this.closeHandler?.();
-      else if (message.startsWith("__clangd_error__:")) this.errorHandler?.(new Error(message));
-      else this.messageHandler?.(message);
-    }
-    close() {
-      this.unlisten?.();
-      this.unlisten = undefined;
-      this.sendQueue = this.sendQueue
-        .then(() => invoke<void>("stop_clangd", { sessionId: this.sessionId }))
-        .catch(() => {});
-      this.closeHandler?.();
-    }
-  }
-
-  //  cin.tie(nullptr);
-  //  ios_base::sync_with_stdio(false);
-  const starterCode = `int main() 
-{
-    return 0;
-}`;
-  const storageKey = "ideforexam.test-cases.v1";
-  const layoutStorageKey = "ideforexam.layout.v1";
   let editorElement: HTMLDivElement;
   let editorPanelElement: HTMLElement;
   let workbenchElement: HTMLElement;
@@ -105,99 +48,6 @@
   let activeTestId = $state("sample");
   let activeTest = $derived(testCases.find((testCase) => testCase.id === activeTestId));
 
-  interface DiffSegment { text: string; bad?: boolean; missing?: string }
-  interface DiffRow { kind: "same" | "changed" | "added" | "missing"; segments: DiffSegment[]; line: number | null }
-  interface DiffView { rows: DiffRow[]; hasDiff: boolean; diffCount: number; firstNote: string; lineCount: number }
-  interface DiffOp { op: "eq" | "del" | "ins"; a: number; b: number }
-
-  function splitDiffLines(text: string) {
-    if (text === "") return [] as string[];
-    const lines = text.replace(/\r\n?/g, "\n").split("\n");
-    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-    return lines;
-  }
-  function numberedLines(text: string) { return splitDiffLines(text); }
-  function gutterStyle(count: number) { return "--gw:" + Math.max(String(count).length, 2) + "ch"; }
-  // 通用 LCS diff；輸入太大時退回逐位置比較，避免卡住 UI
-  function diffOps<T>(a: T[], b: T[]): DiffOp[] {
-    const n = a.length, m = b.length;
-    const ops: DiffOp[] = [];
-    if ((n + 1) * (m + 1) > 4_000_000) {
-      for (let i = 0; i < Math.max(n, m); i++) {
-        if (i < n && i < m && a[i] === b[i]) ops.push({ op: "eq", a: i, b: i });
-        else { if (i < n) ops.push({ op: "del", a: i, b: Math.min(i, m) }); if (i < m) ops.push({ op: "ins", a: Math.min(i, n), b: i }); }
-      }
-      return ops;
-    }
-    const w = m + 1;
-    const table = new Uint32Array((n + 1) * w);
-    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
-      table[i * w + j] = a[i] === b[j] ? table[(i + 1) * w + j + 1] + 1 : Math.max(table[(i + 1) * w + j], table[i * w + j + 1]);
-    }
-    let i = 0, j = 0;
-    while (i < n && j < m) {
-      if (a[i] === b[j]) { ops.push({ op: "eq", a: i, b: j }); i++; j++; }
-      else if (table[(i + 1) * w + j] >= table[i * w + j + 1]) { ops.push({ op: "del", a: i, b: j }); i++; }
-      else { ops.push({ op: "ins", a: i, b: j }); j++; }
-    }
-    while (i < n) ops.push({ op: "del", a: i++, b: j });
-    while (j < m) ops.push({ op: "ins", a: i, b: j++ });
-    return ops;
-  }
-  // 單行字元層級 diff：ACTUAL 多出／不同的字元標 bad，少掉的字元以 ‸ 標記
-  function diffChars(expected: string, actual: string): DiffSegment[] {
-    const e = Array.from(expected), a = Array.from(actual);
-    const segments: DiffSegment[] = [];
-    let pending: string[] = [];
-    const push = (text: string, bad: boolean) => {
-      const last = segments[segments.length - 1];
-      if (last && !last.missing && !!last.bad === bad) last.text += text;
-      else segments.push({ text, bad });
-    };
-    const flush = () => { if (pending.length) { segments.push({ text: "", missing: pending.join("") }); pending = []; } };
-    for (const op of diffOps(e, a)) {
-      if (op.op === "del") pending.push(e[op.a]);
-      else if (op.op === "ins") { if (pending.length) pending.shift(); push(a[op.b], true); } // 有配對到的刪除視為「替換」，不另外標缺字
-      else { flush(); push(a[op.b], false); }
-    }
-    flush();
-    return segments;
-  }
-  function buildDiff(expected: string, actual: string): DiffView {
-    const e = splitDiffLines(expected), a = splitDiffLines(actual);
-    const ops = diffOps(e, a);
-    const rows: DiffRow[] = [];
-    let actualLines = 0;
-    let firstNote = "";
-    let k = 0;
-    while (k < ops.length) {
-      if (ops[k].op === "eq") { actualLines++; rows.push({ kind: "same", segments: [{ text: a[ops[k].b] }], line: actualLines }); k++; continue; }
-      const dels: number[] = [], inss: number[] = [];
-      while (k < ops.length && ops[k].op !== "eq") { if (ops[k].op === "del") dels.push(ops[k].a); else inss.push(ops[k].b); k++; }
-      const pairs = Math.min(dels.length, inss.length);
-      for (let p = 0; p < pairs; p++) {
-        const segments = diffChars(e[dels[p]], a[inss[p]]);
-        actualLines++;
-        if (!firstNote) {
-          let col = 0;
-          for (const seg of segments) { if (seg.bad || seg.missing) break; col += Array.from(seg.text).length; }
-          firstNote = `第一個差異位於第 ${actualLines} 行第 ${col + 1} 個字元`;
-        }
-        rows.push({ kind: "changed", segments, line: actualLines });
-      }
-      for (let p = pairs; p < inss.length; p++) {
-        actualLines++;
-        if (!firstNote) firstNote = `第 ${actualLines} 行起為多餘的輸出`;
-        rows.push({ kind: "added", segments: [{ text: a[inss[p]] === "" ? " " : a[inss[p]], bad: true }], line: actualLines });
-      }
-      for (let p = pairs; p < dels.length; p++) {
-        if (!firstNote) firstNote = `第 ${actualLines + 1} 行起輸出不足`;
-        rows.push({ kind: "missing", segments: [{ text: e[dels[p]] }], line: null });
-      }
-    }
-    const diffCount = rows.filter((row) => row.kind !== "same").length;
-    return { rows, hasDiff: diffCount > 0, diffCount, firstNote, lineCount: actualLines };
-  }
   let timeoutMs = $state(2000);
   let busy = $state("");
   let activeRunId = $state("");
@@ -307,43 +157,7 @@
             }
           }),
           EditorView.lineWrapping,
-          EditorView.theme({
-            "&": { height: "100%", fontSize: "13px" },
-            ".cm-scroller": { overflow: "auto", fontFamily: "'Cascadia Code', Consolas, monospace" },
-            ".cm-content": { padding: "18px 0", caretColor: "#c25c32" },
-            ".cm-gutters": { backgroundColor: "#f4f6f2", border: "none", color: "#8b958a" },
-            ".cm-activeLineGutter": { backgroundColor: "#e9eee8", color: "#293d31" },
-            ".cm-activeLine": { backgroundColor: "#f7f8f5" },
-            "&.cm-focused": { outline: "none" },
-            ".cm-cursor": { borderLeftColor: "#c25c32" },
-            ".cm-selectionBackground, ::selection": { backgroundColor: "#d8e3d5 !important" },
-            // 搜尋面板：浮動在編輯器右上角（VS Code 風格），不佔用文字區高度。
-            ".cm-panels": { position: "absolute", top: "0", right: "18px", left: "auto", width: "420px", maxWidth: "calc(100% - 26px)", background: "transparent !important", border: "none !important", color: "inherit", pointerEvents: "none", zIndex: "300" },
-            ".cm-panels-top": { border: "none !important" },
-            ".cm-vsc-search": { pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: "2px", width: "100%", padding: "6px 8px 6px 3px", border: "1px solid #dce2da", borderTop: "none", borderRadius: "0 0 5px 5px", background: "#f8faf6", boxShadow: "0 3px 10px rgba(38, 53, 45, 0.16)", color: "#26352d", fontFamily: "'Segoe UI Variable', 'Segoe UI', sans-serif", fontSize: "12px" },
-            ".cm-vsc-search button": { font: "inherit" },
-            ".cm-vsc-rows": { display: "flex", flex: "1", flexDirection: "column", gap: "4px", minWidth: "0" },
-            ".cm-vsc-row": { display: "flex", alignItems: "center", gap: "2px" },
-            ".cm-vsc-search:not(.replace-open) .cm-vsc-replace-row": { display: "none" },
-            ".cm-vsc-field": { position: "relative", flex: "1", minWidth: "0" },
-            ".cm-vsc-input": { width: "100%", height: "24px", padding: "0 6px", border: "1px solid #dce2da", borderRadius: "3px", background: "#fff", color: "inherit", font: "inherit", outline: "none" },
-            ".cm-vsc-input:focus": { borderColor: "#6f8f73" },
-            ".cm-vsc-find-input": { paddingRight: "74px" },
-            ".cm-vsc-field.no-match .cm-vsc-input": { borderColor: "#ae5c3e" },
-            ".cm-vsc-options": { position: "absolute", top: "0", right: "2px", bottom: "0", display: "flex", alignItems: "center", gap: "1px" },
-            ".cm-vsc-option, .cm-vsc-icon-btn, .cm-vsc-toggle-replace": { display: "inline-flex", flex: "0 0 auto", alignItems: "center", justifyContent: "center", padding: "0", border: "1px solid transparent", borderRadius: "3px", background: "transparent", color: "#55665b", cursor: "pointer" },
-            ".cm-vsc-option": { width: "22px", height: "20px", fontFamily: "'Cascadia Code', Consolas, monospace", fontSize: "11px" },
-            ".cm-vsc-icon-btn": { width: "24px", height: "24px" },
-            ".cm-vsc-toggle-replace": { alignSelf: "stretch", width: "16px" },
-            ".cm-vsc-toggle-replace svg": { transition: "transform 0.12s" },
-            ".cm-vsc-search.replace-open .cm-vsc-toggle-replace svg": { transform: "rotate(90deg)" },
-            ".cm-vsc-option:hover, .cm-vsc-icon-btn:hover, .cm-vsc-toggle-replace:hover": { background: "#e9eee8" },
-            ".cm-vsc-option.active": { borderColor: "#9db59f", background: "#d8e3d5", color: "#26352d" },
-            ".cm-vsc-search button:focus-visible": { outline: "1px solid #6f8f73", outlineOffset: "-1px" },
-            ".cm-vsc-count": { minWidth: "58px", padding: "0 4px", color: "#5e6f64", fontSize: "11px", textAlign: "center", whiteSpace: "nowrap" },
-            ".cm-vsc-text-btn": { height: "24px", padding: "0 8px", border: "1px solid #dce2da", borderRadius: "3px", background: "#fff", color: "#34443a", cursor: "pointer", whiteSpace: "nowrap" },
-            ".cm-vsc-text-btn:hover": { background: "#e9eee8" }
-          })
+          editorTheme
         ]
       }),
       parent: editorElement
@@ -369,215 +183,11 @@
     };
   });
 
-  // Ctrl+F 搜尋面板：仿 VS Code 的右上角浮動樣式（尋找 / 取代、區分大小寫、全字比對、規則運算式）。
-  let searchReplaceOpen = false;
-  const svgIcon = (paths: string) => `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
-  const chevronIcon = svgIcon('<path d="m9 18 6-6-6-6"/>');
-  const arrowUpIcon = svgIcon('<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>');
-  const arrowDownIcon = svgIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
-  const closeIcon = svgIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
-
-  function createSearchPanel(view: EditorView): Panel {
-    let query = getSearchQuery(view.state);
-
-    const makeButton = (className: string, html: string, title: string, onClick: () => void) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = className;
-      button.title = title;
-      button.setAttribute("aria-label", title);
-      button.innerHTML = html;
-      // 避免點擊按鈕時輸入框失去焦點。
-      button.addEventListener("mousedown", (event) => event.preventDefault());
-      button.addEventListener("click", onClick);
-      return button;
-    };
-    const makeInput = (className: string, placeholder: string) => {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = className;
-      input.placeholder = placeholder;
-      input.setAttribute("aria-label", placeholder);
-      input.setAttribute("spellcheck", "false");
-      input.setAttribute("autocomplete", "off");
-      return input;
-    };
-
-    const dom = document.createElement("div");
-    dom.className = "cm-vsc-search";
-
-    const searchField = makeInput("cm-vsc-input cm-vsc-find-input", "尋找");
-    searchField.setAttribute("main-field", "true"); // 讓 openSearchPanel 能在面板已開啟時重新聚焦。
-    searchField.value = query.search;
-    const replaceField = makeInput("cm-vsc-input", "取代");
-    replaceField.value = query.replace;
-
-    let caseSensitive = query.caseSensitive;
-    let wholeWord = query.wholeWord;
-    let regexp = query.regexp;
-
-    const commit = () => {
-      const next = new SearchQuery({ search: searchField.value, replace: replaceField.value, caseSensitive, wholeWord, regexp });
-      if (!next.eq(query)) {
-        query = next;
-        view.dispatch({ effects: setSearchQuery.of(next) });
-      }
-    };
-
-    const makeOption = (label: string, title: string, get: () => boolean, set: (value: boolean) => void) => {
-      const button = makeButton("cm-vsc-option", label, title, () => {
-        set(!get());
-        syncOptions();
-        commit();
-      });
-      return { button, refresh: () => { button.classList.toggle("active", get()); button.setAttribute("aria-pressed", String(get())); } };
-    };
-    const caseOption = makeOption("Aa", "區分大小寫 (Alt+C)", () => caseSensitive, (value) => { caseSensitive = value; });
-    const wordOption = makeOption("ab", "全字拼寫比對 (Alt+W)", () => wholeWord, (value) => { wholeWord = value; });
-    const regexOption = makeOption(".*", "使用規則運算式 (Alt+R)", () => regexp, (value) => { regexp = value; });
-    const options = [caseOption, wordOption, regexOption];
-    const syncOptions = () => options.forEach((option) => option.refresh());
-    syncOptions();
-
-    const optionsBox = document.createElement("div");
-    optionsBox.className = "cm-vsc-options";
-    options.forEach((option) => optionsBox.append(option.button));
-
-    const findField = document.createElement("div");
-    findField.className = "cm-vsc-field";
-    findField.append(searchField, optionsBox);
-
-    const count = document.createElement("span");
-    count.className = "cm-vsc-count";
-    count.setAttribute("aria-live", "polite");
-
-    const findRow = document.createElement("div");
-    findRow.className = "cm-vsc-row";
-    findRow.append(
-      findField,
-      count,
-      makeButton("cm-vsc-icon-btn", arrowUpIcon, "上一個符合項目 (Shift+Enter)", () => { commit(); findPrevious(view); }),
-      makeButton("cm-vsc-icon-btn", arrowDownIcon, "下一個符合項目 (Enter)", () => { commit(); findNext(view); }),
-      makeButton("cm-vsc-icon-btn", closeIcon, "關閉 (Esc)", () => closeSearchPanel(view))
-    );
-
-    const replaceFieldBox = document.createElement("div");
-    replaceFieldBox.className = "cm-vsc-field";
-    replaceFieldBox.append(replaceField);
-
-    const replaceRow = document.createElement("div");
-    replaceRow.className = "cm-vsc-row cm-vsc-replace-row";
-    replaceRow.append(
-      replaceFieldBox,
-      makeButton("cm-vsc-text-btn", "取代", "取代 (Enter)", () => { commit(); replaceNext(view); }),
-      makeButton("cm-vsc-text-btn", "全部取代", "全部取代 (Ctrl+Alt+Enter)", () => { commit(); replaceAll(view); })
-    );
-
-    const rows = document.createElement("div");
-    rows.className = "cm-vsc-rows";
-    rows.append(findRow, replaceRow);
-
-    const toggleReplace = makeButton("cm-vsc-toggle-replace", chevronIcon, "切換取代", () => {
-      searchReplaceOpen = !searchReplaceOpen;
-      dom.classList.toggle("replace-open", searchReplaceOpen);
-    });
-    dom.classList.toggle("replace-open", searchReplaceOpen);
-    dom.append(toggleReplace, rows);
-
-    const updateCount = () => {
-      const current = getSearchQuery(view.state);
-      findField.classList.remove("no-match");
-      if (!current.search) { count.textContent = ""; return; }
-      if (!current.valid) { count.textContent = "無結果"; findField.classList.add("no-match"); return; }
-      const selection = view.state.selection.main;
-      const limit = 9999;
-      let total = 0;
-      let index = 0;
-      const cursor = current.getCursor(view.state);
-      for (let result = cursor.next(); !result.done; result = cursor.next()) {
-        total++;
-        if (result.value.from === selection.from && result.value.to === selection.to) index = total;
-        if (total >= limit) break;
-      }
-      if (total === 0) { count.textContent = "無結果"; findField.classList.add("no-match"); return; }
-      count.textContent = `${index || "?"} / ${total >= limit ? `${limit}+` : total}`;
-    };
-
-    searchField.addEventListener("input", commit);
-    replaceField.addEventListener("input", commit);
-    searchField.addEventListener("change", commit);
-    replaceField.addEventListener("change", commit);
-
-    dom.addEventListener("keydown", (event) => {
-      if (runScopeHandlers(view, event, "search-panel")) { event.preventDefault(); return; }
-      if (event.altKey && !event.ctrlKey && !event.metaKey) {
-        const option = event.code === "KeyC" ? caseOption : event.code === "KeyW" ? wordOption : event.code === "KeyR" ? regexOption : undefined;
-        if (option) { event.preventDefault(); option.button.click(); return; }
-      }
-      if (event.key !== "Enter" || event.isComposing) return;
-      if (event.target === searchField) {
-        event.preventDefault();
-        commit();
-        (event.shiftKey ? findPrevious : findNext)(view);
-      } else if (event.target === replaceField) {
-        event.preventDefault();
-        commit();
-        if (event.ctrlKey && event.altKey) replaceAll(view);
-        else replaceNext(view);
-      }
-    });
-
-    updateCount();
-
-    return {
-      dom,
-      top: true,
-      mount() { searchField.focus(); searchField.select(); },
-      update(update: ViewUpdate) {
-        let queryChanged = false;
-        for (const transaction of update.transactions) {
-          for (const effect of transaction.effects) {
-            if (effect.is(setSearchQuery) && !effect.value.eq(query)) {
-              query = effect.value;
-              queryChanged = true;
-              if (searchField.value !== query.search) searchField.value = query.search;
-              if (replaceField.value !== query.replace) replaceField.value = query.replace;
-              caseSensitive = query.caseSensitive;
-              wholeWord = query.wholeWord;
-              regexp = query.regexp;
-              syncOptions();
-            }
-          }
-        }
-        if (queryChanged || update.docChanged || update.selectionSet) updateCount();
-      }
-    };
-  }
-
-  // 輸入 "{" 時自動展開成 "{\n    |\n}"；字串、註解內，或游標後方還有內容時維持一般輸入。
-  function autoExpandBrace(view: EditorView, from: number, to: number, text: string) {
-    if (text !== "{" || from !== to) return false;
-    const state = view.state;
-    if (/String|Comment|Char/i.test(syntaxTree(state).resolveInner(from, -1).name)) return false;
-    const line = state.doc.lineAt(from);
-    if (state.doc.sliceString(from, line.to).trim() !== "") return false;
-    const base = /^\s*/.exec(line.text)?.[0] ?? "";
-    const inner = base + state.facet(indentUnit);
-    view.dispatch({
-      changes: { from, to, insert: `{\n${inner}\n${base}}` },
-      selection: { anchor: from + 2 + inner.length },
-      userEvent: "input.type"
-    });
-    return true;
-  }
   function minimizeWindow() { void appWindow?.minimize(); }
   function toggleMaximizeWindow() { void appWindow?.toggleMaximize(); }
   function closeWindow() {
     if (!confirmDiscardChanges()) return;
     void appWindow?.close();
-  }
-  function editableExtensions(editable: boolean) {
-    return [EditorView.editable.of(editable), EditorState.readOnly.of(!editable)];
   }
   function setEditorContent(content: string) {
     source = content;
@@ -662,7 +272,6 @@
     lspSessionWorkspace = "";
     clangdStatus = "等待開啟 C++ 檔案";
   }
-  function clamp(value: number, min: number, max: number) { return Math.round(Math.max(min, Math.min(max, value))); }
   function saveLayout() {
     try {
       localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
@@ -773,7 +382,6 @@
     if (!dirty) return true;
     return window.confirm("目前檔案有尚未儲存的變更，要捨棄嗎？");
   }
-  function joinPath(folder: string, filename: string) { return `${folder}${folder.includes("\\") ? "\\" : "/"}${filename}`; }
   function relativeFile(path: string) {
     return projectPath ? path.slice(projectPath.length).replace(/^[\\/]/, "") : path.split(/[\\/]/).at(-1) ?? path;
   }
@@ -1163,242 +771,3 @@
     </aside>
   </div>
 </dialog></div>{/if}
-
-<style>
-  :global(*) { box-sizing: border-box; }
-  :global(html), :global(body) { margin: 0; min-width: 720px; min-height: 100%; background: #e8ece7; }
-  :global(body) { color: #26352d; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; font-size: 13px; }
-  :global(button), :global(input), :global(textarea) { font: inherit; }
-  :global(button) { color: inherit; }
-  .app-shell { display: flex; flex-direction: column; width: 100%; height: 100vh; min-height: 620px; --pad-x: 14px; --pad-y: 8px; padding: var(--pad-y) var(--pad-x) 8px; gap: 8px; background: radial-gradient(ellipse at 4% 0%, #f5f7f2 0%, #e8ece7 49%, #e4e9e3 100%); }
-  .actionbar, .workbench, .statusbar { border: 1px solid #d6ddd5; background: #fbfcf9; }
-  .eyebrow { display: block; color: #879287; font-size: 9px; font-weight: 750; }
-  .dirty-dot, .file-dirty { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #c56b40; }
-  .icon-button, .mini-icon { display: grid; place-items: center; border: 0; background: transparent; color: #68776d; cursor: pointer; }
-  .icon-button { width: 32px; height: 32px; border-radius: 5px; }
-  .icon-button:hover, .mini-icon:hover { color: #315841; background: #eef2ec; }
-  .save-button, .text-action, .compile-button, .run-button, .test-button, .stop-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 650; }
-  .save-button { height: 32px; padding: 0 12px; border-color: #dce2da; color: #43564a; background: #fff; }
-  .save-button:hover, .text-action:hover { background: #f0f3ee; }
-  .actionbar { display: flex; align-items: center; justify-content: space-between; min-height: 44px; flex: 0 0 44px; padding: 0 12px; border-radius: 3px; box-shadow: 0 2px 8px #2033270b; }
-  .titlebar { display: flex; height: 30px; flex: 0 0 30px; justify-content: flex-end; margin: calc(var(--pad-y) * -1) calc(var(--pad-x) * -1) -4px; }
-  .window-controls { display: flex; height: 100%; }
-  .window-button { display: grid; width: 46px; height: 100%; place-items: center; padding: 0; border: 0; border-radius: 0; color: #5d6c61; background: transparent; cursor: pointer; }
-  .window-button:hover { color: #315841; background: #eef2ec; }
-  .window-close:hover { color: #fff; background: #d1503a; }
-  .action-divider { width: 1px; height: 20px; margin: 0 3px; background: #e0e5df; }
-  .file-actions, .run-actions { display: flex; align-items: center; gap: 6px; }
-  .text-action { height: 30px; padding: 0 9px; color: #59675d; background: transparent; }
-  .run-actions { gap: 8px; }
-  .timeout-field { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 7px; border: 1px solid #e0e5df; border-radius: 4px; color: #758178; background: #fff; }
-  .timeout-field input { width: 46px; padding: 0; border: 0; outline: 0; color: #415247; background: transparent; font-variant-numeric: tabular-nums; }
-  .timeout-field span { color: #8d978e; font-size: 10px; }
-  .compile-button, .run-button, .test-button { height: 30px; padding: 0 11px; }
-  .compile-button { border-color: #d9e0d7; color: #425448; background: #f8faf6; }
-  .run-button { color: white; background: #315841; }
-  .run-button:hover { background: #254a34; }
-  .test-button { border-color: #e3d6cc; color: #9b5738; background: #fbf5f0; }
-  .test-button:hover { background: #f6eae0; }
-  .stop-button { height: 30px; padding: 0 9px; border-color: #edcbbf; color: #a64f38; background: #fff7f3; }
-  .stop-button:hover { background: #fcebe4; }
-  button:disabled { opacity: .48; cursor: not-allowed; }
-  .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: var(--sidebar-width) 6px minmax(300px, 1fr) 6px var(--test-width); grid-template-rows: minmax(240px, 1fr) 6px var(--console-height); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
-  .sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 1; grid-row: 1 / 4; border-right: 1px solid #e1e6df; background: #f8faf6; }
-  .side-section { padding: 12px 9px 8px; }
-  .files-section { min-height: 0; flex: 1; overflow: auto; }
-  .section-heading { display: flex; align-items: center; justify-content: space-between; padding: 1px 7px 9px; color: #7b877d; font-size: 10px; font-weight: 750; }
-  .section-heading small { margin-left: 4px; color: #a0aaa0; font-size: 10px; font-weight: 550; }
-  .mini-icon { width: 25px; height: 25px; border-radius: 4px; }
-  .file-list { margin: 0; padding: 0; list-style: none; }
-  .file-item { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; border: 0; border-radius: 4px; color: #647268; background: transparent; text-align: left; cursor: pointer; }
-  .file-item span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
-  .file-item:hover { background: #eff3ed; }
-  .file-item.active { color: #2e563c; background: #e9f0e7; font-weight: 650; }
-  .file-item :global(svg) { flex: 0 0 auto; color: #738d75; }
-  .file-dirty { margin-left: auto; }
-  .case-list { display: flex; min-height: 0; flex-direction: column; gap: 6px; margin: 0; padding: 0; overflow: auto; list-style: none; }
-  .case-row { display: flex; align-items: center; gap: 6px; }
-  .case-chip { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border: 1.5px solid #e4e9e2; border-radius: 5px; color: #45564a; background: #fff; text-align: left; cursor: pointer; }
-  .case-chip.case-ac:hover { background: #f1f8f2; }
-  .case-chip.case-ac.active { background: #e8f4ea; box-shadow: 0 0 0 1.5px #4c9a5f inset; }
-  .case-chip.case-wa:hover { background: #fdf4f2; }
-  .case-chip.case-wa.active { background: #fbe9e5; box-shadow: 0 0 0 1.5px #d1503a inset; }
-  .case-chip.case-other:hover { background: #fef8ef; }
-  .case-chip.case-other.active { background: #fcf0e0; box-shadow: 0 0 0 1.5px #d78a3a inset; }
-  .case-row .remove-case { flex: 0 0 auto; }
-  .case-index { color: #647268; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; font-weight: 650; }
-  .case-result { padding: 2px 7px; border-radius: 3px; color: #647268; background: #eef2ec; font-size: 9px; font-weight: 800; letter-spacing: .02em; }
-  .case-chip.case-ac { border-color: #4c9a5f; }
-  .case-chip.case-ac .case-result { color: #29623b; background: #e3f3e5; }
-  .case-chip.case-wa { border-color: #d1503a; }
-  .case-chip.case-wa .case-result { color: #a23a26; background: #fbe6e1; }
-  .case-chip.case-other { border-color: #d78a3a; }
-  .case-chip.case-other .case-result { color: #a2621c; background: #fbedd9; }
-  .status-ac { color: #3c7954 !important; }
-  .status-fail { color: #bc6544 !important; }
-  .status-toolchain { color: #8a958b; }
-  .status-toolchain.ready { color: #4c7a55; }
-  .compiler-dot { width: 7px; height: 7px; border-radius: 50%; background: #82a875; box-shadow: 0 0 0 3px #82a87520; }
-  .empty-note { margin: 5px 8px; color: #929d93; font-size: 11px; line-height: 1.6; }
-  .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3; grid-row: 1; border-right: 1px solid #e1e6df; }
-  .editor-tabbar { display: flex; height: 39px; flex: 0 0 39px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e5e9e3; background: #f8faf6; }
-  .active-file-tab { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 2px solid #52775c; color: #3f5446; font-size: 11px; }
-  .active-file-tab span { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }
-  .active-file-tab :global(svg) { flex: 0 0 auto; color: #758e76; }
-  .active-file-tab i { width: 6px; height: 6px; border-radius: 50%; background: #c56b40; }
-  .editor-shortcut { display: flex; align-items: center; gap: 5px; padding: 0 12px; color: #9aa39a; font-size: 10px; }
-  .editor-wrap { position: relative; isolation: isolate; display: flex; min-height: 0; flex: 1; flex-direction: column; }
-  .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
-  .editor-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: #6b7a70; background: #fbfcf9; }
-  .editor-empty :global(svg) { color: #9aae9c; }
-  .editor-empty strong { color: #34443a; font-size: 14px; font-weight: 650; }
-  .editor-empty p { margin: 0; font-size: 12px; }
-  .editor-empty-actions { display: flex; gap: 8px; margin-top: 10px; }
-  .editor-empty-actions button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px; border: 1px solid #dce2da; border-radius: 4px; cursor: pointer; }
-  .empty-primary { color: #fff; border-color: #315841 !important; background: #315841; }
-  .empty-primary:hover { background: #3a684d; }
-  .empty-secondary { color: #43564a; background: #fff; }
-  .empty-secondary:hover { background: #f0f3ee; }
-  .editor-status { display: flex; height: 25px; flex: 0 0 25px; align-items: center; justify-content: flex-end; gap: 15px; padding: 0 13px; border-top: 1px solid #e9ede7; color: #8a958b; background: #f8faf6; font-size: 9px; }
-  .editor-status span:first-child { overflow: hidden; max-width: 48%; margin-right: auto; text-overflow: ellipsis; white-space: nowrap; }
-  .editor-status .clangd-status { overflow: hidden; max-width: 38%; text-overflow: ellipsis; white-space: nowrap; }
-  .editor-status .clangd-status.ready { color: #4c7a55; }
-  .editor-status .clangd-status.unavailable { color: #ae5c3e; }
-  .case-sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 5; grid-row: 1; padding: 14px 13px 12px; background: #fcfdfb; }
-  .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  .panel-title-row h2 { margin: 3px 0 0; color: #304137; font-size: 14px; font-weight: 680; }
-  .case-editor-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid #315841; border-radius: 4px; color: #315841; background: #eef3ec; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; }
-  .case-editor-button:hover { color: white; background: #315841; }
-  .case-editor-button:focus-visible { outline: 2px solid #6f8f73; outline-offset: 2px; }
-  .panel-title-row h2 small { margin-left: 4px; color: #a0aaa0; font-size: 10px; font-weight: 550; }
-  .modal-title-row { display: flex; align-items: center; justify-content: space-between; }
-  .modal-close { color: #8a958a; }
-  .test-manager-modal h2 { margin: 12px 0 16px; color: #2f4236; font-size: 18px; }
-  .test-manager-body { display: grid; min-height: 0; flex: 1; grid-template-columns: 1.5fr 1fr; gap: 26px; overflow: hidden; }
-  .test-manager-editor { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: auto; }
-  .test-manager-editor .case-textarea { min-height: 240px; }
-  .test-manager-editor .expected-area { min-height: 190px; }
-  .test-manager-list { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding-left: 24px; border-left: 1px solid #e4e9e2; overflow: hidden; }
-  .test-manager-list .panel-title-row { margin-bottom: 11px; }
-  .test-manager-list .case-list { min-height: 0; flex: 1; }
-  .test-manager-list .case-chip { min-height: 40px; }
-  .run-case-button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid #dce5da; border-radius: 5px; color: #416949; background: #eff5ec; cursor: pointer; }
-  .run-case-button:hover { background: #e3eddf; }
-  .case-name-row { display: flex; align-items: center; gap: 4px; margin-bottom: 10px; }
-  .case-name { min-width: 0; flex: 1; padding: 5px 7px; border: 1px solid #e4e9e2; border-radius: 4px; outline: none; color: #45564a; background: #fff; font-size: 11px; }
-  .case-name:focus, .case-textarea:focus { border-color: #93ad91; box-shadow: 0 0 0 2px #d9e6d6; }
-  .remove-case { color: #a2aaa1; }
-  .code-field-label { margin: 5px 0; color: #8a958a; font-size: 9px; font-weight: 750; }
-  .case-textarea { width: 100%; min-height: 72px; flex: 1; resize: vertical; padding: 8px; border: 1px solid #e4e9e2; border-radius: 4px; outline: none; color: #425349; background: #f9fbf8; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.55; tab-size: 4; }
-  .expected-area { min-height: 62px; max-height: 40%; flex: .8; }
-  .case-result-row { display: flex; min-height: 30px; align-items: center; gap: 8px; color: #879187; font-size: 10px; }
-  .result-pill { padding: 3px 7px; border-radius: 3px; background: #edf4ea; font-size: 9px; font-weight: 800; }
-  .result-placeholder { color: #9aa39a; }
-  .console-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3 / 6; grid-row: 3; overflow: hidden; border-top: 1px solid #e1e6df; background: #fbfcf9; }
-  .splitter { z-index: 2; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 0; border: 0; appearance: none; background: transparent; touch-action: none; user-select: none; }
-  .splitter span { flex: 0 0 auto; border-radius: 2px; background: #cdd6cc; transition: background-color .12s ease, width .12s ease, height .12s ease; }
-  .splitter:hover span, .splitter:focus-visible span, .workbench.resizing .splitter span { background: #b96a45; }
-  .splitter:focus-visible { outline: 2px solid #b96a45; outline-offset: -1px; }
-  .splitter-sidebar { grid-column: 2; grid-row: 1 / 4; cursor: col-resize; }
-  .splitter-sidebar span, .splitter-main span { width: 2px; height: 34px; }
-  .splitter-main { grid-column: 4; grid-row: 1; cursor: col-resize; }
-  .splitter-console { grid-column: 3 / 6; grid-row: 2; cursor: row-resize; }
-  .splitter-console span { width: 34px; height: 2px; }
-  .workbench.resizing, .workbench.resizing * { user-select: none; }
-  .console-header { display: flex; min-height: 38px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e8ece6; background: #f8faf6; }
-  .console-tabs { display: flex; align-items: stretch; gap: 3px; padding-left: 9px; }
-  .console-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; color: #829084; background: transparent; font-size: 10px; cursor: pointer; }
-  .console-tabs button.selected { border-bottom-color: #52775c; color: #3e5d46; }
-  .console-state { display: flex; align-items: center; gap: 7px; overflow: hidden; padding: 0 13px; color: #849084; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-  .console-state.error { color: #ae5c3e; }
-  .console-state.success { color: #4c7a55; }
-  .working-indicator { width: 8px; height: 8px; border: 1px solid #8eaa87; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .output-columns, .diff-columns { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }
-  .output-block, .diff-columns > div { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; padding: 9px 13px; }
-  .output-block + .output-block, .diff-columns > div + div { border-left: 1px solid #e9ede7; }
-  .output-label { flex: 0 0 auto; margin-bottom: 6px; color: #96a096; font-size: 9px; font-weight: 750; }
-  .output-block pre, .diff-columns pre { flex: 1; }
-  .output-block pre, .diff-columns pre, .compiler-output { overflow: auto; min-height: 0; margin: 0; color: #45564b; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .stderr-block pre { color: #a65b42; }
-  .compiler-output { min-height: 0; flex: 1; padding: 11px 14px; }
-  .diff-columns { position: relative; padding-bottom: 23px; }
-  .diff-note { position: absolute; right: 12px; bottom: 5px; margin: 0; color: #ae6547; font-size: 9px; }
-  .diff-columns { grid-template-columns: minmax(0, 1fr) 7px minmax(0, 1fr) 7px minmax(0, 1fr); }
-  .col-splitter { position: relative; cursor: col-resize; }
-  .col-splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #e9ede7; }
-  .col-splitter span { position: relative; width: 2px; height: 34px; }
-  .col-splitter.active span { background: #b96a45; }
-  .diff-count { margin-left: 8px; color: #c4917b; font-weight: 650; }
-  .actual-label { display: flex; align-items: center; }
-  .diff-toggle { margin-left: auto; padding: 3px 8px; border: 1px solid #dfe6dc; border-radius: 4px; color: #7f8f83; background: transparent; font-size: 9px; font-weight: 650; cursor: pointer; }
-  .diff-toggle:hover { border-color: #c9d6c6; background: #f3f7f1; }
-  .diff-toggle.on { border-color: #e7c3b6; color: #b0735c; background: #fbeee9; }
-  .diff-bad { border-radius: 2px; background: #fbdcd2; }
-  .diff-missing { position: relative; display: inline-block; width: 0; height: 1.5em; vertical-align: top; cursor: help; }
-  .diff-missing::after { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: #eba08e; }
-  .diff-ghost { color: #c9bab3; background: #fcf6f3; user-select: none; }
-  .numbered .ln { position: relative; display: block; min-height: 1.5em; padding-left: calc(var(--gw, 2ch) + 12px); }
-  .numbered .ln::before { content: attr(data-n); position: absolute; left: 0; width: var(--gw, 2ch); color: #b3bdb3; text-align: right; user-select: none; }
-  .statusbar { display: flex; height: 25px; flex: 0 0 25px; align-items: center; justify-content: space-between; padding: 0 10px; border-radius: 3px; color: #7f8a80; font-size: 9px; }
-  .status-project { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .statusbar b { margin-left: 4px; color: #596a5d; font-weight: 650; }
-  .modal-backdrop { position: fixed; z-index: 5; inset: 0; display: grid; place-items: center; padding: 20px; background: #1e2d2470; backdrop-filter: blur(3px); }
-  .project-modal { width: min(390px, 100%); padding: 24px; border: 1px solid #dce4d9; border-radius: 7px; background: #fbfcf9; box-shadow: 0 18px 50px #18231d40; animation: appear .18s ease-out both; }
-  .project-modal::backdrop { background: transparent; }
-  @keyframes appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .modal-icon { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 5px; color: #315841; background: #eaf1e7; }
-  .project-modal h2 { margin: 14px 0 5px; color: #2f4236; font-size: 18px; }
-  .project-modal p { margin: 0 0 19px; color: #7d897e; font-size: 11px; line-height: 1.6; }
-  .project-modal form { display: flex; flex-direction: column; gap: 7px; }
-  .project-modal label { color: #657268; font-size: 10px; font-weight: 700; }
-  .project-modal input { height: 36px; padding: 0 10px; border: 1px solid #dce4da; border-radius: 4px; outline: none; color: #34463a; background: white; }
-  .project-modal input:focus { border-color: #86a282; box-shadow: 0 0 0 2px #dfeadd; }
-  .test-manager-modal {position: relative;box-sizing: border-box;width: 880px;min-width: 0;max-width: calc(100% - 40px);height: 660px;max-height: calc(100% - 40px);margin: 0;}
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
-  .modal-actions button { min-height: 32px; padding: 0 11px; border: 1px solid #dce3da; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 650; }
-  .cancel-button { color: #5d6c61; background: #fff; }
-  .confirm-button { border-color: #315841 !important; color: white; background: #315841; }
-  @media (max-width: 980px) {
-    .app-shell { min-height: 780px; }
-    .actionbar { flex-wrap: wrap; flex: 0 0 auto; gap: 4px 12px; padding: 5px 12px; }
-    .workbench { grid-template-columns: var(--sidebar-width) 6px minmax(280px, 1fr); grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(180px, var(--test-height)) 6px minmax(150px, var(--console-height)); }
-    .sidebar { grid-column: 1; grid-row: 1 / 6; }
-    .editor-panel { grid-column: 3; grid-row: 1; }
-    .case-sidebar { grid-column: 3; grid-row: 3; border-top: 1px solid #e1e6df; border-left: 0; }
-    .console-panel { grid-column: 3; grid-row: 5; }
-    .splitter-sidebar { grid-column: 2; grid-row: 1 / 6; }
-    .splitter-main { grid-column: 3; grid-row: 2; cursor: row-resize; }
-    .splitter-main span { width: 34px; height: 2px; }
-    .splitter-console { grid-column: 3; grid-row: 4; }
-    .case-textarea { min-height: 45px; }
-    .expected-area { min-height: 40px; }
-    .test-manager-modal { width: min(94vw, 560px); height: auto; max-height: 92vh; padding: 22px; }
-    .test-manager-body { grid-template-columns: 1fr; overflow: auto; }
-    .test-manager-list { min-height: 160px; padding-left: 0; padding-top: 14px; border-left: 0; border-top: 1px solid #e4e9e2; }
-    .test-manager-editor .case-textarea { min-height: 90px; }
-    .test-manager-editor .expected-area { min-height: 70px; }
-  }
-  @media (max-width: 740px) {
-    :global(html), :global(body) { min-width: 360px; }
-    .app-shell { --pad-x: 7px; --pad-y: 7px; height: auto; min-height: 100vh; gap: 6px; }
-    .actionbar { align-items: flex-start; flex-direction: column; gap: 4px; padding: 5px 8px; }
-    .file-actions, .run-actions { width: 100%; justify-content: space-between; }
-    .text-action { padding: 0 5px; font-size: 10px; }
-    .run-actions { gap: 4px; }
-    .timeout-field { padding: 0 4px; }
-    .compile-button, .run-button, .test-button, .stop-button { gap: 4px; padding: 0 7px; font-size: 10px; }
-    .workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); overflow: visible; }
-    .sidebar { min-height: 0; max-height: none; grid-column: 1; grid-row: 1; border-right: 0; border-bottom: 1px solid #e1e6df; }
-    .files-section { min-height: 90px; }
-    .editor-panel { min-height: 0; grid-column: 1; grid-row: 3; border-right: 0; }
-    .case-sidebar { min-height: 0; grid-column: 1; grid-row: 5; border-top: 1px solid #e1e6df; border-left: 0; }
-    .console-panel { min-height: 0; grid-column: 1; grid-row: 7; border-top: 1px solid #e1e6df; }
-    .splitter-sidebar { grid-column: 1; grid-row: 2; cursor: row-resize; }
-    .splitter-sidebar span { width: 34px; height: 2px; }
-    .splitter-main { grid-column: 1; grid-row: 4; }
-    .splitter-console { grid-column: 1; grid-row: 6; }
-    .statusbar { gap: 10px; }
-    .status-project { max-width: 68%; }
-  }
-</style>

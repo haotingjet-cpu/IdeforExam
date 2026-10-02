@@ -197,6 +197,11 @@ fn file_uri(path: String) -> Result<String, String> {
         .map_err(|_| "無法將程式檔案路徑轉換成 URI。".into())
 }
 
+#[tauri::command]
+fn get_problem(target_url: String) -> Result<get_toij::ATiojProblem, String> {
+    get_toij::ATiojProblem::get(&target_url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -221,7 +226,8 @@ pub fn run() {
             start_clangd,
             send_clangd,
             stop_clangd,
-            file_uri
+            file_uri,
+            get_problem
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
