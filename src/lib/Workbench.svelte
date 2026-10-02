@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -9,13 +9,13 @@
   import { bracketMatching, defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
-  import { closeSearchPanel, search, searchKeymap } from "@codemirror/search";
+  import { closeSearchPanel, getSearchQuery, search, searchKeymap, setSearchQuery } from "@codemirror/search";
   import localforage from "localforage";
   import { LanguageServerClient, languageServerWithTransport } from "codemirror-languageserver";
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
 
   import "./workbench/workbench.css";
-  import type { CompareResult, CompileResult, ConsoleTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo } from "./workbench/types";
+  import type { CompareResult, CompileResult, ConsoleTab, EditorTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo } from "./workbench/types";
   import { layoutStorageKey, starterCode, storageKey } from "./workbench/constants";
   import { clamp, joinPath } from "./workbench/utils";
   import { buildDiff, gutterStyle, numberedLines } from "./workbench/diff";
@@ -38,12 +38,16 @@
   let toolchainsReady = $state(false);
   let toolchainStatus = $state("正在檢查 C++ 工具鏈...");
   let toolchainInitialization: Promise<ToolchainInfo>;
-  let source = $state("");
   let projectPath = $state("");
   let filePaths = $state<string[]>([]);
+  // 檔案分頁：tabs 只放會影響畫面的資訊（路徑、是否未儲存）；
+  // 每個分頁的 CodeMirror 狀態（文件、復原紀錄、游標）與捲動位置放在非響應式的 Map，切換時整份換上。
+  let tabs = $state<EditorTab[]>([]);
   let activePath = $state("");
   let hasFile = $derived(activePath !== "");
-  let dirty = $state(false);
+  let tabStripElement = $state<HTMLElement | undefined>();
+  const tabStates = new Map<string, EditorState>();
+  const tabScroll = new Map<string, number>();
   let testCases = $state<TestCase[]>([{ id: "sample", name: "", input: "5\n", expectedOutput: "5\n" }]);
   let activeTestId = $state("sample");
   let activeTest = $derived(testCases.find((testCase) => testCase.id === activeTestId));
@@ -137,31 +141,7 @@
       localStorage.removeItem(layoutStorageKey);
     }
 
-    editorView = new EditorView({
-      state: EditorState.create({
-        doc: source,
-        extensions: [
-          lineNumbers(), highlightActiveLineGutter(), history(), indentOnInput(), bracketMatching(), cpp(),
-          search({ top: true, createPanel: createSearchPanel }),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-          keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-          indentUnit.of("    "),
-          EditorView.inputHandler.of(autoExpandBrace),
-          EditorState.tabSize.of(4),
-          lspCompartment.of([]),
-          editableCompartment.of(editableExtensions(false)),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              source = update.state.doc.toString();
-              dirty = true;
-            }
-          }),
-          EditorView.lineWrapping,
-          editorTheme
-        ]
-      }),
-      parent: editorElement
-    });
+    editorView = new EditorView({ state: createEditorState("", false), parent: editorElement });
 
     localforage.getItem<TestCase[]>(storageKey)
       .then((parsed) => {
@@ -189,21 +169,87 @@
     if (!confirmDiscardChanges()) return;
     void appWindow?.close();
   }
-  function setEditorContent(content: string) {
-    source = content;
-    editorView?.dispatch({
-      changes: { from: 0, to: editorView.state.doc.length, insert: content },
-      effects: editableCompartment.reconfigure(editableExtensions(activePath !== ""))
+  // 每個分頁都用同一組 extensions 建立獨立的 EditorState；沒有開啟任何檔案時用唯讀的空白狀態。
+  function createEditorState(doc: string, editable: boolean) {
+    return EditorState.create({
+      doc,
+      extensions: [
+        lineNumbers(), highlightActiveLineGutter(), history(), indentOnInput(), bracketMatching(), cpp(),
+        search({ top: true, createPanel: createSearchPanel }),
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+        indentUnit.of("    "),
+        EditorView.inputHandler.of(autoExpandBrace),
+        EditorState.tabSize.of(4),
+        lspCompartment.of([]),
+        editableCompartment.of(editableExtensions(editable)),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged && activePath) setTabDirty(activePath, true);
+        }),
+        EditorView.lineWrapping,
+        editorTheme
+      ]
     });
-    dirty = false;
+  }
+  // 整份換上另一個分頁的狀態；搜尋字串（Ctrl+F 的查詢）會跟著帶過去，面板則收起。
+  function swapEditorState(next: EditorState, scrollTop = 0) {
+    const view = editorView;
+    if (!view) return;
+    const query = getSearchQuery(view.state);
+    view.setState(next);
+    if (query.search) view.dispatch({ effects: setSearchQuery.of(query) });
+    requestAnimationFrame(() => { view.scrollDOM.scrollTop = scrollTop; });
+  }
+  // 離開目前分頁前，把編輯器狀態存回 Map（先卸掉 LSP 外掛，回來時再由 connectLanguageServer 掛上）。
+  function stashActiveTab() {
+    const view = editorView;
+    if (!view || !activePath) return;
+    closeSearchPanel(view);
+    view.dispatch({ effects: lspCompartment.reconfigure([]) });
+    tabStates.set(activePath, view.state);
+    tabScroll.set(activePath, view.scrollDOM.scrollTop);
   }
   function clearEditor() {
     activePath = "";
-    setEditorContent("");
+    swapEditorState(createEditorState("", false));
     closeLanguageServer();
   }
+  function setTabDirty(path: string, value: boolean) {
+    const tab = tabs.find((item) => item.path === path);
+    if (tab && tab.dirty !== value) tab.dirty = value;
+  }
+  function baseName(path: string) { return path.split(/[\\/]/).at(-1) ?? path; }
+  // Windows 路徑不分大小寫、斜線方向可能不同，比較時先正規化。
+  function normalizePath(path: string) { return path.replace(/\//g, "\\").toLowerCase(); }
+  function samePath(a: string, b: string) { return normalizePath(a) === normalizePath(b); }
+  function findTab(path: string) { return tabs.find((tab) => samePath(tab.path, path)); }
+  function isInsideProject(path: string) {
+    if (!projectPath || path.length <= projectPath.length) return false;
+    return samePath(path.slice(0, projectPath.length), projectPath) && /[\\/]/.test(path[projectPath.length]);
+  }
+  // 分頁標籤：預設只顯示檔名；有同名檔案同時開啟時加上上層資料夾以區分。
+  function tabLabel(path: string) {
+    const name = baseName(path);
+    const clash = tabs.some((tab) => tab.path !== path && baseName(tab.path).toLowerCase() === name.toLowerCase());
+    if (!clash) return name;
+    const parts = path.split(/[\\/]/);
+    return parts.length > 1 ? `${parts.at(-2)}/${name}` : name;
+  }
+  function isPathDirty(path: string) { return findTab(path)?.dirty ?? false; }
+  function tabContent(path: string) {
+    if (path === activePath && editorView) return editorView.state.doc.toString();
+    return tabStates.get(path)?.doc.toString() ?? "";
+  }
   function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
-  async function connectLanguageServer(path: string) {
+  // 切換分頁可能很快，連線動作排成佇列依序執行，避免同時啟動多個 clangd；已不是目前分頁的請求直接略過。
+  let lspConnectChain: Promise<void> = Promise.resolve();
+  function connectLanguageServer(path: string) {
+    const run = lspConnectChain.then(() => doConnectLanguageServer(path));
+    lspConnectChain = run.catch(() => {});
+    return run;
+  }
+  async function doConnectLanguageServer(path: string) {
+    if (activePath !== path) return;
     const extension = /\.(cpp|cc|cxx|h|hpp)$/i.test(path);
     if (!extension) {
       closeLanguageServer();
@@ -248,6 +294,7 @@
 
     if (!lspSession || !languageClient || !lspTransport) return;
     const documentUri = await invoke<string>("file_uri", { path });
+    if (activePath !== path) return;
     const workspaceFolders = [{ uri: lspSession.rootUri, name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace" }];
     editorView?.dispatch({
       effects: lspCompartment.reconfigure(languageServerWithTransport({
@@ -379,45 +426,100 @@
     saveLayout();
   }
   function confirmDiscardChanges() {
-    if (!dirty) return true;
-    return window.confirm("目前檔案有尚未儲存的變更，要捨棄嗎？");
+    const unsaved = tabs.filter((tab) => tab.dirty);
+    if (!unsaved.length) return true;
+    const names = unsaved.map((tab) => tabLabel(tab.path)).join("、");
+    return window.confirm(unsaved.length === 1 ? `「${names}」有尚未儲存的變更，要捨棄嗎？` : `有 ${unsaved.length} 個檔案尚未儲存（${names}），要捨棄嗎？`);
   }
   function relativeFile(path: string) {
-    return projectPath ? path.slice(projectPath.length).replace(/^[\\/]/, "") : path.split(/[\\/]/).at(-1) ?? path;
+    return isInsideProject(path) ? path.slice(projectPath.length).replace(/^[\\/]/, "") : baseName(path);
   }
   async function refreshFiles(path = projectPath) {
     if (path) filePaths = await invoke<string[]>("list_source_files", { projectPath: path });
   }
-  async function loadFile(path: string, discardConfirmed = false) {
-    if (!discardConfirmed && !confirmDiscardChanges()) return;
+  // 開啟檔案：已開啟就切過去，否則讀檔後新增一個分頁。
+  async function openFile(path: string) {
+    const existing = findTab(path);
+    if (existing) { await activateTab(existing.path); return; }
     try {
       const contents = await invoke<string>("read_source", { path });
+      stashActiveTab();
+      tabStates.set(path, createEditorState(contents, true));
+      tabs = [...tabs, { path, dirty: false }];
       activePath = path;
-      setEditorContent(contents);
+      swapEditorState(tabStates.get(path)!);
+      if (uiMode === "code") editorView?.focus();
       setNotice(`已開啟 ${relativeFile(path)}`);
       await connectLanguageServer(path);
     } catch (error) { setNotice(String(error), "error"); }
   }
+  async function activateTab(path: string) {
+    if (path === activePath) { if (uiMode === "code") editorView?.focus(); return; }
+    const state = tabStates.get(path);
+    if (!state) return;
+    stashActiveTab();
+    activePath = path;
+    swapEditorState(state, tabScroll.get(path) ?? 0);
+    if (uiMode === "code") editorView?.focus();
+    await connectLanguageServer(path);
+  }
+  function cycleTab(direction: 1 | -1) {
+    if (tabs.length < 2) return;
+    const index = tabs.findIndex((tab) => tab.path === activePath);
+    void activateTab(tabs[(index + direction + tabs.length) % tabs.length].path);
+  }
+  function closeTab(path: string) {
+    const index = tabs.findIndex((tab) => tab.path === path);
+    if (index < 0) return;
+    if (tabs[index].dirty && !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)) return;
+    const wasActive = path === activePath;
+    tabs = tabs.filter((tab) => tab.path !== path);
+    tabStates.delete(path);
+    tabScroll.delete(path);
+    if (!wasActive) return;
+    const next = tabs[Math.min(index, tabs.length - 1)];
+    if (!next) { clearEditor(); return; }
+    activePath = next.path;
+    swapEditorState(tabStates.get(next.path)!, tabScroll.get(next.path) ?? 0);
+    if (uiMode === "code") editorView?.focus();
+    void connectLanguageServer(next.path);
+  }
+  function closeAllTabs() {
+    tabs = [];
+    tabStates.clear();
+    tabScroll.clear();
+    clearEditor();
+  }
+  function scrollTabs(event: WheelEvent) {
+    if (!tabStripElement || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    tabStripElement.scrollLeft += event.deltaY;
+  }
+  // 目前分頁變動或新增分頁時，把作用中的分頁捲到可見範圍。
+  $effect(() => {
+    const path = activePath;
+    void tabs.length;
+    if (!tabStripElement || !path) return;
+    void tick().then(() => tabStripElement?.querySelector<HTMLElement>(".editor-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  });
   async function openProject() {
     if (!confirmDiscardChanges()) return;
     try {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected !== "string") return;
+      closeAllTabs();
       projectPath = selected;
       await refreshFiles(selected);
-      if (filePaths.length) await loadFile(filePaths[0], true);
-      else {
-        clearEditor();
-        setNotice("專案已開啟，新增一個 C++ 檔案開始撰寫");
-      }
+      if (filePaths.length) await openFile(filePaths[0]);
+      else setNotice("專案已開啟，新增一個 C++ 檔案開始撰寫");
     } catch (error) { setNotice(String(error), "error"); }
   }
   async function openSourceFile() {
     try {
       const selected = await open({ multiple: false, defaultPath: projectPath || undefined, filters: [{ name: "C++ 原始碼", extensions: ["cpp", "cc", "cxx", "h", "hpp"] }] });
       if (typeof selected !== "string") return;
-      projectPath = selected.replace(/[\\/][^\\/]+$/, "");
-      await loadFile(selected);
+      // 檔案已在目前專案內就保留專案資料夾；否則以該檔案所在資料夾作為專案。
+      if (!isInsideProject(selected)) projectPath = selected.replace(/[\\/][^\\/]+$/, "");
+      await openFile(selected);
       await refreshFiles();
     } catch (error) { setNotice(String(error), "error"); }
   }
@@ -427,16 +529,17 @@
     try {
       const parent = await open({ directory: true, multiple: false });
       if (typeof parent !== "string") return;
+      if (!confirmDiscardChanges()) return;
+      closeAllTabs();
       projectPath = await invoke<string>("create_project", { parentPath: parent, name: projectName.trim() });
       projectName = "";
       exitMode("newProject");
       await refreshFiles();
-      await loadFile(joinPath(projectPath, "main.cpp"));
+      await openFile(joinPath(projectPath, "main.cpp"));
       setNotice("專案已建立", "success");
     } catch (error) { setNotice(String(error), "error"); }
   }
   async function newSourceFile() {
-    if (!confirmDiscardChanges()) return;
     try {
       const selected = await save({
         title: "新增 C++ 檔案",
@@ -446,48 +549,79 @@
       if (!selected) { setNotice("已取消新增檔案"); return; }
       const path = /\.(cpp|cc|cxx|h|hpp)$/i.test(selected) ? selected : `${selected}.cpp`;
       await invoke("save_source", { path, content: starterCode });
-      if (!projectPath || !path.startsWith(projectPath)) projectPath = path.replace(/[\\/][^\\/]+$/, "");
+      if (!projectPath || !isInsideProject(path)) projectPath = path.replace(/[\\/][^\\/]+$/, "");
       await refreshFiles();
-      await loadFile(path, true);
+      await openFile(path);
       setNotice(`已建立 ${relativeFile(path)}`, "success");
     } catch (error) { setNotice(String(error), "error"); }
+  }
+  // 寫入單一分頁；寫入期間若又有修改，維持「未儲存」狀態。
+  async function writeTab(path: string) {
+    const content = tabContent(path);
+    await invoke("save_source", { path, content });
+    if (tabContent(path) === content) setTabDirty(path, false);
   }
   async function saveCurrent(): Promise<boolean> {
     const path = activePath;
     if (!path) { setNotice("請先新增或開啟檔案", "error"); return false; }
     try {
-      await invoke("save_source", { path, content: source });
-      dirty = false;
+      await writeTab(path);
       await refreshFiles();
       await connectLanguageServer(path);
       setNotice("檔案已儲存", "success");
       return true;
     } catch (error) { setNotice(String(error), "error"); return false; }
   }
+  async function saveOtherDirtyTabs(): Promise<boolean> {
+    for (const tab of tabs.filter((item) => item.dirty && item.path !== activePath)) {
+      try { await writeTab(tab.path); }
+      catch (error) { setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error"); return false; }
+    }
+    return true;
+  }
+  async function saveAllTabs() {
+    const targets = tabs.filter((tab) => tab.dirty);
+    if (!targets.length) { setNotice("沒有需要儲存的檔案"); return; }
+    for (const tab of targets) {
+      try { await writeTab(tab.path); }
+      catch (error) { setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error"); return; }
+    }
+    await refreshFiles();
+    setNotice(`已儲存 ${targets.length} 個檔案`, "success");
+  }
+  // 編譯前一併存下其他分頁（被 #include 的檔案必須是最新內容）。
+  async function saveForBuild() { return (await saveOtherDirtyTabs()) && (await saveCurrent()); }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
-    const isSaveShortcut =
-      (event.ctrlKey || event.metaKey) &&
-      !event.shiftKey &&
-      !event.altKey &&
-      event.key.toLowerCase() === "s";
+    const mod = event.ctrlKey || event.metaKey;
+    if (!mod || event.altKey) return;
+    const key = event.key.toLowerCase();
 
-    if (!isSaveShortcut) return;
-
-    event.preventDefault();
-
-    if (!hasFile || busy !== "" || event.repeat) return;
-
-    void saveCurrent();
+    if (key === "s") {
+      event.preventDefault();
+      if (busy !== "" || event.repeat) return;
+      if (event.shiftKey) void saveAllTabs();
+      else if (hasFile) void saveCurrent();
+      return;
+    }
+    if (uiMode !== "code") return;
+    if (key === "w" && !event.shiftKey) {
+      event.preventDefault();
+      if (activePath && !event.repeat) closeTab(activePath);
+    } else if (event.key === "Tab" || (!event.shiftKey && (event.key === "PageUp" || event.key === "PageDown"))) {
+      event.preventDefault();
+      cycleTab(event.key === "PageUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1);
+    }
   }
   async function compileCurrent(): Promise<boolean> {
+    const path = activePath;
     if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return false; }
-    if (!(await saveCurrent())) return false;
+    if (!(await saveForBuild())) return false;
     busy = "compile";
     compilerOutput = "正在呼叫 G++...";
     consoleTab = "build";
     try {
-      const result = await invoke<CompileResult>("compile_source", { path: activePath });
+      const result = await invoke<CompileResult>("compile_source", { path });
       compilerOutput = result.output || "Build Successful";
       setNotice(result.success ? "Build Successful" : "Build Failed", result.success ? "success" : "error");
       return result.success;
@@ -495,6 +629,7 @@
     finally { busy = ""; }
   }
   async function runProgram() {
+    const path = activePath;
     if (!(await compileCurrent())) return;
     busy = "run";
     consoleTab = "output";
@@ -503,7 +638,7 @@
     cancelRequested = false;
     try {
       await invoke("register_run", { runId });
-      const result = await invoke<RunResult>("run_source", { runId, path: activePath, input: activeTest?.input ?? "", timeoutMs });
+      const result = await invoke<RunResult>("run_source", { runId, path, input: activeTest?.input ?? "", timeoutMs });
       stdout = result.stdout;
       stderr = result.stderr;
       if (result.cancelled) setNotice("程式已停止");
@@ -550,14 +685,15 @@
     persistTests();
   }
   async function runTests(all: boolean) {
+    const path = activePath;
     if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return; }
-    if (!(await saveCurrent())) return;
+    if (!(await saveForBuild())) return;
     busy = "test";
     compilerOutput = "正在編譯測試程式...";
     consoleTab = "build";
     let runId = "";
     try {
-      const compiled = await invoke<CompileResult>("compile_source", { path: activePath });
+      const compiled = await invoke<CompileResult>("compile_source", { path });
       compilerOutput = compiled.output || "Build Successful";
       if (!compiled.success) { setNotice("Build Failed，測資未執行", "error"); return; }
       const casesToRun = all ? [...testCases] : testCases.filter((testCase) => testCase.id === activeTestId);
@@ -567,7 +703,7 @@
       await invoke("register_run", { runId });
       for (const testCase of casesToRun) {
         if (cancelRequested) break;
-        const result = await invoke<RunResult>("run_source", { runId, path: activePath, input: testCase.input, timeoutMs });
+        const result = await invoke<RunResult>("run_source", { runId, path, input: testCase.input, timeoutMs });
         if (result.cancelled) { cancelRequested = true; break; }
         let status: ResultStatus = "AC";
         let firstDifference: number | null = null;
@@ -644,12 +780,28 @@
     <aside class="sidebar">
       <section class="side-section files-section">
         <div class="section-heading"><span>專案檔案 <small>{filePaths.length}</small></span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
-        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={file === activePath} class="file-item" onclick={() => loadFile(file)}><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if file === activePath && dirty}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
+        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)}><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if isPathDirty(file)}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
         {:else}<p class="empty-note">開啟資料夾以瀏覽來源檔</p>{/if}
       </section>
     </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
-      <div class="editor-tabbar"><div class="active-file-tab"><FileCode2 size={15} /><span>{activePath ? relativeFile(activePath) : "尚未開啟檔案"}</span>{#if dirty}<i></i>{/if}</div><div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div></div>
+      <div class="editor-tabbar">
+        <div class="editor-tabs" role="tablist" aria-label="已開啟的檔案" bind:this={tabStripElement} onwheel={scrollTabs}>
+          {#each tabs as tab (tab.path)}
+            <div class="editor-tab" class:active={tab.path === activePath} class:dirty={tab.dirty}>
+              <button type="button" class="tab-main" role="tab" aria-selected={tab.path === activePath} title={tab.path}
+                onclick={() => activateTab(tab.path)}
+                onmousedown={(event) => { if (event.button === 1) event.preventDefault(); }}
+                onauxclick={(event) => { if (event.button === 1) { event.preventDefault(); closeTab(tab.path); } }}
+              ><FileCode2 size={14} /><span>{tabLabel(tab.path)}</span></button>
+              <button type="button" class="tab-close" title="關閉 (Ctrl+W)" aria-label={`關閉 ${tabLabel(tab.path)}`} onclick={() => closeTab(tab.path)}><i class="tab-dirty-dot"></i><X size={13} /></button>
+            </div>
+          {:else}
+            <div class="editor-tab empty-tab active"><span class="tab-main"><FileCode2 size={14} /><span>尚未開啟檔案</span></span></div>
+          {/each}
+        </div>
+        <div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div>
+      </div>
       <div class="editor-wrap" inert={uiMode !== "code"}>
         <div class="editor-host" bind:this={editorElement}></div>
         {#if !hasFile}

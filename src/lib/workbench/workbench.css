@@ -76,11 +76,28 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .empty-note { margin: 5px 8px; color: #929d93; font-size: 11px; line-height: 1.6; }
 .editor-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; grid-column: 3; grid-row: 1; border-right: 1px solid #e1e6df; }
 .editor-tabbar { display: flex; height: 39px; flex: 0 0 39px; align-items: stretch; justify-content: space-between; border-bottom: 1px solid #e5e9e3; background: #f8faf6; }
-.active-file-tab { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 2px solid #52775c; color: #3f5446; font-size: 11px; }
-.active-file-tab span { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }
-.active-file-tab svg { flex: 0 0 auto; color: #758e76; }
-.active-file-tab i { width: 6px; height: 6px; border-radius: 50%; background: #c56b40; }
-.editor-shortcut { display: flex; align-items: center; gap: 5px; padding: 0 12px; color: #9aa39a; font-size: 10px; }
+.editor-tabs { display: flex; min-width: 0; flex: 1; align-items: stretch; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.editor-tabs::-webkit-scrollbar { display: none; }
+.editor-tab { position: relative; display: flex; flex: 0 0 auto; align-items: stretch; max-width: 220px; border-right: 1px solid #e5e9e3; border-bottom: 2px solid transparent; color: #7d8a80; font-size: 11px; background: transparent; }
+.editor-tab:hover { background: #f0f4ee; color: #3f5446; }
+.editor-tab.active { border-bottom-color: #52775c; background: #fbfcf9; color: #3f5446; }
+.editor-tab.empty-tab { cursor: default; }
+.tab-main { display: flex; min-width: 0; align-items: center; gap: 7px; padding: 0 4px 0 12px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.tab-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-main svg { flex: 0 0 auto; color: #758e76; }
+.tab-main:focus-visible, .tab-close:focus-visible { outline: 1px solid #6f8f73; outline-offset: -2px; }
+.tab-close { position: relative; display: inline-flex; flex: 0 0 26px; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: #8b958a; cursor: pointer; opacity: 0; }
+.tab-close svg { border-radius: 3px; }
+.tab-close:hover svg { background: #dfe7dc; color: #2e563c; }
+.editor-tab:hover .tab-close, .editor-tab.active .tab-close, .tab-close:focus-visible { opacity: 1; }
+.tab-dirty-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: #c56b40; display: none; }
+.editor-tab.dirty .tab-close { opacity: 1; }
+.editor-tab.dirty .tab-dirty-dot { display: block; }
+.editor-tab.dirty .tab-close svg { opacity: 0; }
+.editor-tab.dirty:hover .tab-dirty-dot, .editor-tab.dirty .tab-close:hover .tab-dirty-dot, .editor-tab.dirty .tab-close:focus-visible .tab-dirty-dot { display: none; }
+.editor-tab.dirty:hover .tab-close svg, .editor-tab.dirty .tab-close:focus-visible svg { opacity: 1; }
+.file-item.opened:not(.active) { color: #3f5446; }
+.editor-shortcut { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 0 12px; color: #9aa39a; font-size: 10px; }
 .editor-wrap { position: relative; isolation: isolate; display: flex; min-height: 0; flex: 1; flex-direction: column; }
 .editor-host { min-height: 0; flex: 1; overflow: hidden; background: #fbfcf9; }
 .editor-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: #6b7a70; background: #fbfcf9; }
