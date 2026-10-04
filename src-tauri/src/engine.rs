@@ -8,6 +8,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, process::Child};
 
+/// stdout / stderr 各自最多保留的位元組數；超過的部分仍會讀掉（避免程式卡在寫入），但不會存起來。
+const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
@@ -25,6 +28,7 @@ pub struct RunResult {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub cancelled: bool,
+    pub output_truncated: bool,
 }
 
 #[derive(Clone, Default)]
@@ -239,10 +243,14 @@ pub fn run_program(
     };
 
     let execution_time_ms = start.elapsed().as_millis();
+    // 輪詢間隔內自然結束的程式也要以實際耗時為準，否則略超過時限的程式會被判成通過。
+    if !cancelled && !timed_out && execution_time_ms > timeout.as_millis() {
+        timed_out = true;
+    }
 
     let _ = input_thread.join();
-    let stdout = join_reader(stdout_thread)?;
-    let stderr = join_reader(stderr_thread)?;
+    let (stdout, stdout_truncated) = join_reader(stdout_thread)?;
+    let (stderr, stderr_truncated) = join_reader(stderr_thread)?;
 
     Ok(RunResult {
         stdout,
@@ -251,6 +259,7 @@ pub fn run_program(
         exit_code: status.and_then(|status| status.code()),
         timed_out,
         cancelled,
+        output_truncated: stdout_truncated || stderr_truncated,
     })
 }
 
@@ -328,29 +337,68 @@ fn executable_path_for(source_path: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(format!("{stem}.ideforexam{extension}")))
 }
 
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
-) -> thread::JoinHandle<std::io::Result<Vec<u8>>> {
+) -> thread::JoinHandle<std::io::Result<CapturedOutput>> {
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
-        Ok(bytes)
+        let mut truncated = false;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            let room = MAX_OUTPUT_BYTES.saturating_sub(bytes.len());
+            if read <= room {
+                bytes.extend_from_slice(&buffer[..read]);
+            } else {
+                bytes.extend_from_slice(&buffer[..room]);
+                truncated = true; // 超出上限的部分直接丟棄，但持續讀取以免擋住子行程。
+            }
+        }
+        Ok(CapturedOutput { bytes, truncated })
     })
 }
 
-fn join_reader(reader: thread::JoinHandle<std::io::Result<Vec<u8>>>) -> Result<String, String> {
-    let bytes = reader
+fn join_reader(
+    reader: thread::JoinHandle<std::io::Result<CapturedOutput>>,
+) -> Result<(String, bool), String> {
+    let captured = reader
         .join()
         .map_err(|_| "讀取程式輸出時發生錯誤。".to_string())?
         .map_err(|error| format!("讀取程式輸出失敗：{error}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok((
+        String::from_utf8_lossy(&captured.bytes).into_owned(),
+        captured.truncated,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_output, compile, run_source, RunRegistry};
+    use super::{compare_output, compile, run_source, spawn_reader, RunRegistry, MAX_OUTPUT_BYTES};
     use std::fs;
+    use std::io::Read;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn reader_caps_captured_output_and_keeps_draining() {
+        let source = std::io::repeat(b'x').take(MAX_OUTPUT_BYTES as u64 + 12_345);
+        let captured = spawn_reader(source).join().unwrap().unwrap();
+        assert_eq!(captured.bytes.len(), MAX_OUTPUT_BYTES);
+        assert!(captured.truncated);
+
+        let small = spawn_reader(&b"hello\n"[..]).join().unwrap().unwrap();
+        assert_eq!(small.bytes, b"hello\n");
+        assert!(!small.truncated);
+    }
 
     #[test]
     fn compares_exact_output_and_reports_first_difference() {

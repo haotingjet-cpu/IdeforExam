@@ -13,7 +13,7 @@ export interface TestCase {
   firstDifference?: number | null;
 }
 export interface CompileResult { success: boolean; output: string; executablePath: string | null }
-export interface RunResult { stdout: string; stderr: string; executionTimeMs: number; exitCode: number | null; timedOut: boolean; cancelled: boolean }
+export interface RunResult { stdout: string; stderr: string; executionTimeMs: number; exitCode: number | null; timedOut: boolean; cancelled: boolean; outputTruncated: boolean }
 export interface CompareResult { accepted: boolean; firstDifference: number | null }
 export interface LspSessionInfo {
   sessionId: string;

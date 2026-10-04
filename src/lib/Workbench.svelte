@@ -87,6 +87,7 @@
   let sidebarWidth = $state(205);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
+  let consoleOpen = $state(true);
   let editorHeight = $state(330);
   let testHeight = $state(210);
   let sidebarHeight = $state(130);
@@ -129,6 +130,7 @@
       const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
       if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
       if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
+      if (typeof layout.consoleOpen === "boolean") consoleOpen = layout.consoleOpen;
       if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
       if (typeof layout.editorHeight === "number") editorHeight = clamp(layout.editorHeight, 240, 560);
       if (typeof layout.testHeight === "number") testHeight = clamp(layout.testHeight, 180, 420);
@@ -319,9 +321,15 @@
     lspSessionWorkspace = "";
     clangdStatus = "等待開啟 C++ 檔案";
   }
+  // 顯示／隱藏下方終端機（輸出面板）。使用者手動切換會記住；執行時自動展開則不寫入設定。
+  function setConsoleOpen(open: boolean) {
+    consoleOpen = open;
+    saveLayout();
+  }
+  function toggleConsole() { setConsoleOpen(!consoleOpen); }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
     } catch { /* Keep resizing available when local storage is unavailable. */ }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
@@ -604,6 +612,12 @@
       else if (hasFile) void saveCurrent();
       return;
     }
+    // 用 code 判斷實體按鍵，注音／中文輸入法或其他鍵盤配置下也能觸發。
+    if ((event.code === "Backquote" || event.key === "`") && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) toggleConsole();
+      return;
+    }
     if (uiMode !== "code") return;
     if (key === "w" && !event.shiftKey) {
       event.preventDefault();
@@ -620,6 +634,7 @@
     busy = "compile";
     compilerOutput = "正在呼叫 G++...";
     consoleTab = "build";
+    consoleOpen = true;
     try {
       const result = await invoke<CompileResult>("compile_source", { path });
       compilerOutput = result.output || "Build Successful";
@@ -633,6 +648,7 @@
     if (!(await compileCurrent())) return;
     busy = "run";
     consoleTab = "output";
+    consoleOpen = true;
     const runId = crypto.randomUUID();
     activeRunId = runId;
     cancelRequested = false;
@@ -643,7 +659,7 @@
       stderr = result.stderr;
       if (result.cancelled) setNotice("程式已停止");
       else setNotice(
-          result.timedOut ? "Time Limit Exceeded" : result.exitCode === 0 ? `執行完成 · ${result.executionTimeMs} ms` : `Runtime Error · Exit ${result.exitCode}`,
+          (result.timedOut ? "Time Limit Exceeded" : result.exitCode === 0 ? `執行完成 · ${result.executionTimeMs} ms` : `Runtime Error · Exit ${result.exitCode}`) + (result.outputTruncated ? "（輸出過長，已截斷）" : ""),
           result.timedOut || result.exitCode !== 0 ? "error" : "success"
         );
     } catch (error) { stderr = String(error); setNotice(String(error), "error"); }
@@ -691,6 +707,7 @@
     busy = "test";
     compilerOutput = "正在編譯測試程式...";
     consoleTab = "build";
+    consoleOpen = true;
     let runId = "";
     try {
       const compiled = await invoke<CompileResult>("compile_source", { path });
@@ -765,6 +782,7 @@
     </div>
     <div class="run-actions">
       <label class="timeout-field" title="程式逾時上限"><Clock3 size={14} /><input type="number" min="100" max="300000" step="100" bind:value={timeoutMs} aria-label="執行逾時毫秒" /><span>ms</span></label>
+      <button type="button" class="console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={15} />終端機</button>
       <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady || !hasFile}><Settings2 size={15} />編譯</button>
       <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady || !hasFile}><Play size={15} fill="currentColor" />執行</button>
       <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady || !hasFile}><CircleCheck size={15} />全部測試</button>
@@ -774,6 +792,7 @@
   <main
     class="workbench"
     class:resizing={activeResize !== null}
+    class:console-hidden={!consoleOpen}
     bind:this={workbenchElement}
     style={`--sidebar-width:${sidebarWidth}px;--sidebar-height:${sidebarHeight}px;--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px`}
   >
@@ -838,12 +857,12 @@
         </li>{/each}</ul>
       {:else}<p class="empty-note">尚無測資，點擊右上角開啟主控台新增。</p>{/if}
     </aside>
-    <section class="console-panel">
+    <section class="console-panel" id="console-panel">
       <div class="console-header"><div class="console-tabs" role="tablist" aria-label="執行結果">
         <button class:selected={consoleTab === "output"} role="tab" aria-selected={consoleTab === "output"} onclick={() => consoleTab = "output"}><Terminal size={14} />程式輸出</button>
         <button class:selected={consoleTab === "build"} role="tab" aria-selected={consoleTab === "build"} onclick={() => consoleTab = "build"}><Settings2 size={14} />編譯器</button>
         <button class:selected={consoleTab === "diff"} role="tab" aria-selected={consoleTab === "diff"} onclick={() => consoleTab = "diff"}><Code2 size={14} />輸出差異</button>
-      </div><div class="console-state" class:error={noticeTone === "error"} class:success={noticeTone === "success"}>{#if busy}<span class="working-indicator"></span>{/if}{notice}</div></div>
+      </div><div class="console-header-right"><div class="console-state" class:error={noticeTone === "error"} class:success={noticeTone === "success"}>{#if busy}<span class="working-indicator"></span>{/if}{notice}</div><button type="button" class="console-hide" title="隱藏終端機 (Ctrl+`)" aria-label="隱藏終端機" onclick={() => setConsoleOpen(false)}><X size={14} /></button></div></div>
       {#if consoleTab === "output"}<div class="output-columns"><div class="output-block"><div class="output-label">STDOUT</div><pre>{stdout || "執行結果將顯示於此"}</pre></div><div class="output-block stderr-block"><div class="output-label">STDERR</div><pre>{stderr || "無錯誤輸出"}</pre></div></div>
       {:else if consoleTab === "build"}<pre class="compiler-output">{compilerOutput || "編譯器訊息將顯示於此"}</pre>
       {:else if activeTest}
@@ -872,7 +891,7 @@
     <button type="button" class="splitter splitter-main" role="slider" aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"} aria-valuemin={viewportMode === "desktop" ? 235 : 240} aria-valuemax={viewportMode === "desktop" ? 480 : 560} aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight} aria-label="調整編輯器與測資比例" title="拖曳調整編輯器與測資比例" onpointerdown={(event) => startResize(event, "main")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "main")}><span></span></button>
     <button type="button" class="splitter splitter-console" role="slider" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="420" aria-valuenow={consoleHeight} aria-label="調整輸出面板高度" title="拖曳調整輸出面板高度" onpointerdown={(event) => startResize(event, "console")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "console")}><span></span></button>
   </main>
-  <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span><span>競程工作台 <b>0.1.0</b></span></footer>
+  <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span>{#if !consoleOpen}<span class="status-notice" class:error={noticeTone === "error"} class:success={noticeTone === "success"} title={notice}>{notice}</span>{/if}<span class="status-right"><button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} />終端機</button><span>競程工作台 <b>0.1.0</b></span></span></footer>
 </div>
 
 {#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
