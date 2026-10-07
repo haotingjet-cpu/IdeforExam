@@ -15,7 +15,7 @@
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
 
   import "./workbench/workbench.css";
-  import type { CompareResult, CompileResult, ConsoleTab, EditorTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo } from "./workbench/types";
+  import type { CompareResult, CompileResult, ConsoleTab, EditorTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo, TiojProblem } from "./workbench/types";
   import { layoutStorageKey, starterCode, storageKey } from "./workbench/constants";
   import { clamp, joinPath } from "./workbench/utils";
   import { buildDiff, gutterStyle, numberedLines } from "./workbench/diff";
@@ -23,6 +23,7 @@
   import { createSearchPanel } from "./workbench/search-panel";
   import { autoExpandBrace, editableExtensions } from "./workbench/editor-extensions";
   import { editorTheme } from "./workbench/editor-theme";
+  import { renderProblemMarkdown } from "./workbench/markdown";
 
 
   let editorElement: HTMLDivElement;
@@ -65,7 +66,7 @@
   let noticeTone = $state("neutral");
   // 介面模式（簡易狀態機）：同一時間只會處於其中一個模式。
   // 擴充方式：在 UiMode 加入新名稱，再視需要在 uiModeHooks 補上進入 / 離開該模式時要做的事。
-  type UiMode = "code" | "tests" | "newProject";
+  type UiMode = "code" | "tests" | "newProject" | "problems";
   const uiModeHooks: Partial<Record<UiMode, { enter?: () => void; leave?: () => void }>> = {
     // 離開「編輯程式」時收起 Ctrl+F 搜尋框（查詢內容仍保留，回來再按 Ctrl+F 即可）。
     code: { leave: () => { if (editorView) closeSearchPanel(editorView); } }
@@ -73,6 +74,7 @@
   let uiMode = $state<UiMode>("code");
   let showNewProject = $derived(uiMode === "newProject");
   let showTestManager = $derived(uiMode === "tests");
+  let showProblemViewer = $derived(uiMode === "problems");
   function enterMode(next: UiMode) {
     if (uiMode === next) return;
     uiModeHooks[uiMode]?.leave?.();
@@ -84,6 +86,22 @@
     if (uiMode === mode) enterMode("code");
   }
   let projectName = $state("");
+  let problemUrl = $state("");
+  let problem = $state<TiojProblem | null>(null);
+  let problemHtml = $state<Record<"description" | "input" | "output", string>>({
+    description: "",
+    input: "",
+    output: ""
+  });
+  let problemStatus = $state("尚未讀取題目");
+  let problemLoading = $state(false);
+  let problemError = $state("");
+  let activeProblemSection = $state<"description" | "input" | "output">("description");
+  let problemSections: Array<{ id: "description" | "input" | "output"; label: string }> = [
+    { id: "description", label: "Description" },
+    { id: "input", label: "Input Format" },
+    { id: "output", label: "Output Format" }
+  ];
   let sidebarWidth = $state(205);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
@@ -243,7 +261,57 @@
     return tabStates.get(path)?.doc.toString() ?? "";
   }
   function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
-  // 切換分頁可能很快，連線動作排成佇列依序執行，避免同時啟動多個 clangd；已不是目前分頁的請求直接略過。
+  function openProblemViewer() {
+    problemError = "";
+    problemStatus = problem ? "題目已載入" : "尚未讀取題目";
+    enterMode("problems");
+  }
+  async function loadProblem(event: SubmitEvent) {
+    event.preventDefault();
+    const url = problemUrl.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      problemError = "請輸入有效的 TIOJ 題目網址。";
+      return;
+    }
+
+    problemLoading = true;
+    problemError = "";
+    problemStatus = "正在讀取題目...";
+    try {
+      const result = await invoke<TiojProblem>("get_problem", { targetUrl: url });
+      problem = result;
+      await renderProblemContent();
+      activeProblemSection = "description";
+      problemStatus = "題目讀取完成";
+      setNotice("題目已載入", "success");
+    } catch (error) {
+      problem = null;
+      problemHtml = { description: "", input: "", output: "" };
+      problemError = String(error);
+      problemStatus = "題目讀取失敗";
+      setNotice(String(error), "error");
+    } finally {
+      problemLoading = false;
+    }
+  }
+  function clearProblemViewer() {
+    problemUrl = "";
+    problem = null;
+    problemHtml = { description: "", input: "", output: "" };
+    problemError = "";
+    problemStatus = "尚未讀取題目";
+    activeProblemSection = "description";
+    exitMode("problems");
+  }
+  async function renderProblemContent() {
+    if (!problem) return;
+    problemHtml = {
+      description: await renderProblemMarkdown(problem.description),
+      input: await renderProblemMarkdown(problem.inputFormat),
+      output: await renderProblemMarkdown(problem.outputFormat)
+    };
+  }
+  // 切換分頁可能很快，連線動作排成佇列依序執行，避免同時啜動多個 clangd；已不是目前分頁的請求直接略過。
   let lspConnectChain: Promise<void> = Promise.resolve();
   function connectLanguageServer(path: string) {
     const run = lspConnectChain.then(() => doConnectLanguageServer(path));
@@ -775,6 +843,7 @@
     <div class="file-actions">
       <button class="text-action" onclick={() => enterMode("newProject")}><FolderPlus size={15} />建立專案</button>
       <button class="text-action" onclick={openProject}><FolderOpen size={15} />開啟專案</button>
+      <button class="text-action" onclick={openProblemViewer}><FileCode2 size={15} />題目</button>
       <span class="action-divider"></span>
       <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
       <button class="text-action" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
@@ -897,6 +966,41 @@
 {#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
   <div class="modal-icon"><FolderPlus size={19} /></div><h2 id="new-project-title">建立 C++ 專案</h2><p>選擇儲存位置後，工作台會建立 main.cpp。</p>
   <form onsubmit={createProject}><label for="project-name">專案名稱</label><input id="project-name" bind:value={projectName} placeholder="例如：apcs-practice" /><div class="modal-actions"><button type="button" class="cancel-button" onclick={() => exitMode("newProject")}>取消</button><button type="submit" class="confirm-button" disabled={!projectName.trim()}>選擇位置並建立</button></div></form>
+</dialog></div>{/if}
+
+{#if showProblemViewer}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) clearProblemViewer(); }}><dialog open class="project-modal problem-modal" aria-labelledby="problem-title">
+  <div class="modal-title-row">
+    <div class="modal-icon"><FileCode2 size={19} /></div>
+    <button type="button" class="mini-icon modal-close" title="關閉" aria-label="關閉" onclick={clearProblemViewer}><CircleX size={18} /></button>
+  </div>
+  <h2 id="problem-title">TIOJ 題目</h2>
+  <form class="problem-form" onsubmit={loadProblem}>
+    <label for="problem-url">題目網址</label>
+    <div class="problem-url-row">
+      <input id="problem-url" bind:value={problemUrl} type="url" placeholder="https://tioj.ck.tp.edu.tw/problems/123" autocomplete="url" spellcheck="false" />
+      <button type="submit" class="problem-load-button" disabled={problemLoading}> {problemLoading ? "讀取中..." : "讀取題目"} </button>
+    </div>
+    <p class="problem-status" class:error={problemError}>{problemStatus}</p>
+    {#if problemError}<p class="problem-error" role="alert">{problemError}</p>{/if}
+  </form>
+  {#if problem}
+    <div class="problem-content">
+      <div class="problem-tabs" role="tablist" aria-label="題目區段">
+        {#each problemSections as section}
+          <button type="button" class:selected={activeProblemSection === section.id} role="tab" aria-selected={activeProblemSection === section.id} onclick={() => activeProblemSection = section.id}>{section.label}</button>
+        {/each}
+      </div>
+      <div class="problem-panel">
+        {#if activeProblemSection === "description"}
+          {@html problemHtml.description || "（Description 為空）"}
+        {:else if activeProblemSection === "input"}
+          {@html problemHtml.input || "（Input Format 為空）"}
+        {:else}
+          {@html problemHtml.output || "（Output Format 為空）"}
+        {/if}
+      </div>
+    </div>
+  {/if}
 </dialog></div>{/if}
 
 {#if showTestManager}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeTestManager(); }}><dialog open class="project-modal test-manager-modal" aria-labelledby="test-manager-title">

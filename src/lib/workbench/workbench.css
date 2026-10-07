@@ -207,6 +207,22 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .project-modal label { color: #657268; font-size: 10px; font-weight: 700; }
 .project-modal input { height: 36px; padding: 0 10px; border: 1px solid #dce4da; border-radius: 4px; outline: none; color: #34463a; background: white; }
 .project-modal input:focus { border-color: #86a282; box-shadow: 0 0 0 2px #dfeadd; }
+.problem-modal { width: min(760px, calc(100vw - 40px)); max-height: min(720px, calc(100vh - 40px)); overflow: hidden; }
+.problem-form { margin-top: 6px; }
+.problem-url-row { display: flex; gap: 8px; }
+.problem-url-row input { flex: 1; min-width: 0; }
+.problem-load-button { min-width: 102px; height: 36px; padding: 0 12px; border: 1px solid #315841; border-radius: 4px; color: #fff; background: #315841; cursor: pointer; }
+.problem-load-button:hover:not(:disabled) { background: #3c684d; }
+.problem-load-button:disabled { opacity: .6; cursor: wait; }
+.problem-status { margin: 3px 0 0; color: #788779; font-size: 10px; }
+.problem-status.error { color: #ae5c3e; }
+.problem-error { margin: 2px 0 0; color: #a63d2f; font-size: 10px; font-weight: 650; }
+.problem-content { display: flex; min-height: 0; flex-direction: column; margin-top: 18px; overflow: hidden; }
+.problem-tabs { display: flex; flex: 0 0 auto; gap: 6px; padding: 0 1px; border-bottom: 1px solid #e4e9e2; }
+.problem-tabs button { height: 32px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; color: #748178; background: transparent; font-size: 11px; font-weight: 650; cursor: pointer; }
+.problem-tabs button.selected { border-bottom-color: #52775c; color: #315841; }
+.problem-panel { min-height: 260px; max-height: 420px; flex: 1; overflow: auto; padding: 14px 3px 6px; }
+.problem-panel pre { min-height: 220px; margin: 0; color: #425349; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .test-manager-modal {position: relative;box-sizing: border-box;width: 880px;min-width: 0;max-width: calc(100% - 40px);height: 660px;max-height: calc(100% - 40px);margin: 0;}
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
 .modal-actions button { min-height: 32px; padding: 0 11px; border: 1px solid #dce3da; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 650; }

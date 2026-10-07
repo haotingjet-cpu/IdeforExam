@@ -25,6 +25,7 @@ export interface LspSessionInfo {
 export interface ToolchainInfo { gxxPath: string; clangdPath: string; extracted: boolean }
 
 export interface EditorTab { path: string; dirty: boolean }
+export interface TiojProblem { description: string; inputFormat: string; outputFormat: string }
 export interface DiffSegment { text: string; bad?: boolean; missing?: string }
 export interface DiffRow { kind: "same" | "changed" | "added" | "missing"; segments: DiffSegment[]; line: number | null }
 export interface DiffView { rows: DiffRow[]; hasDiff: boolean; diffCount: number; firstNote: string; lineCount: number }
