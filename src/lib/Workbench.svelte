@@ -28,21 +28,22 @@
   import { renderProblemMarkdown } from "./workbench/markdown";
 
 
-  let leftEditorElement = $state<HTMLDivElement>();
-  let rightEditorElement = $state<HTMLDivElement>();
   let editorPanelElement: HTMLElement;
   let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
-  type EditorSide = "left" | "right";
-  let activeEditorSide = $state<EditorSide>("left");
+  type EditorPane = { id: string; name: string; tabs: EditorTab[] };
+  let editorPanes = $state<EditorPane[]>([]);
+  let activeEditorId = $state("");
   let splitEditor = $state(false);
   let splitRatio = $state(0.5); // 左側窗格寬度占比
   let editorWrapElement = $state<HTMLElement | undefined>();
   let splitDrag = $state<{ pointerId: number } | null>(null);
-  const editorViews = new Map<EditorSide, EditorView>();
-  const editorStates = new Map<EditorSide, EditorState>();
+  const editorViews = new Map<string, EditorView>();
+  const editorStates = new Map<string, EditorState>();
+  const editorHosts: Record<string, HTMLDivElement | undefined> = {};
+  const tabStripElements: Record<string, HTMLElement | undefined> = {};
   // 要用 SvelteMap：樣板會讀它來決定「尚未開啟檔案」的遮罩與窗格標題，一般 Map 不會觸發更新。
-  const editorPaths = new SvelteMap<EditorSide, string>();
+  const editorPaths = new SvelteMap<string, string>();
   const lspCompartment = new Compartment();
   const editableCompartment = new Compartment();
   let lspTransport: TauriLspTransport | undefined;
@@ -54,12 +55,10 @@
   let toolchainInitialization: Promise<ToolchainInfo>;
   let projectPath = $state("");
   let filePaths = $state<string[]>([]);
-  // 檔案分頁：tabs 只放會影響畫面的資訊（路徑、是否未儲存）；
+  // 每個編輯區塊保有獨立的分頁列；分頁本身只放會影響畫面的資訊（路徑、是否未儲存）。
   // 每個分頁的 CodeMirror 狀態（文件、復原紀錄、游標）與捲動位置放在非響應式的 Map，切換時整份換上。
-  let tabs = $state<EditorTab[]>([]);
   let activePath = $state("");
   let hasFile = $derived(activePath !== "");
-  let tabStripElement = $state<HTMLElement | undefined>();
   const tabStates = new Map<string, EditorState>();
   const tabScroll = new Map<string, number>();
   let testCases = $state<TestCase[]>([{ id: "sample", name: "", input: "5\n", expectedOutput: "5\n" }]);
@@ -174,17 +173,11 @@
       localStorage.removeItem(layoutStorageKey);
     }
 
-    const createEditorView = (side: EditorSide, element: HTMLDivElement) => {
-      const view = new EditorView({ state: createEditorState("", false), parent: element });
-      editorViews.set(side, view);
-      editorStates.set(side, view.state);
-      editorPaths.set(side, "");
-      if (side === "left") editorView = view;
-      return view;
-    };
-    createEditorView("left", leftEditorElement!);
-    createEditorView("right", rightEditorElement!);
-    setActiveEditorSide("left");
+    const initialPane = createEditorPane();
+    editorPanes = [initialPane];
+    activeEditorId = initialPane.id;
+    setActiveEditorPane(initialPane.id);
+    void tick().then(() => createEditorView(initialPane.id, editorHosts[initialPane.id]));
 
     localforage.getItem<TestCase[]>(storageKey)
       .then((parsed) => {
@@ -237,42 +230,51 @@
     });
   }
   // 整份換上另一個分頁的狀態；搜尋字串（Ctrl+F 的查詢）會跟著帶過去，面板則收起。
-  function swapEditorState(next: EditorState, scrollTop = 0, side: EditorSide = activeEditorSide) {
-    const view = editorViews.get(side);
+  function swapEditorState(next: EditorState, scrollTop = 0, id: string = activeEditorId) {
+    const view = editorViews.get(id);
     if (!view) return;
     const query = getSearchQuery(view.state);
     view.setState(next);
-    editorStates.set(side, next);
+    editorStates.set(id, next);
     if (query.search) view.dispatch({ effects: setSearchQuery.of(query) });
     requestAnimationFrame(() => { view.scrollDOM.scrollTop = scrollTop; });
   }
   // 離開目前分頁前，把編輯器狀態存回 Map（先卸掉 LSP 外掛，回來時再由 connectLanguageServer 掛上）。
-  function stashActiveTab(side: EditorSide = activeEditorSide) {
-    const view = editorViews.get(side);
-    const path = editorPaths.get(side);
+  function stashActiveTab(id: string = activeEditorId) {
+    const view = editorViews.get(id);
+    const path = editorPaths.get(id);
     if (!view || !path) return;
     closeSearchPanel(view);
     view.dispatch({ effects: lspCompartment.reconfigure([]) });
     tabStates.set(path, view.state);
     tabScroll.set(path, view.scrollDOM.scrollTop);
   }
-  function otherSide(side: EditorSide): EditorSide { return side === "left" ? "right" : "left"; }
-  function clearEditor(side: EditorSide = activeEditorSide) {
-    editorPaths.set(side, "");
-    if (activeEditorSide === side) activePath = "";
-    const view = editorViews.get(side);
-    if (view) swapEditorState(createEditorState("", false), 0, side);
-    // 另一側還開著檔案時不要關掉共用的 language server。
-    if (activeEditorSide === side && !editorPaths.get(otherSide(side))) closeLanguageServer();
+  function clearEditor(id: string = activeEditorId) {
+    editorPaths.set(id, "");
+    if (activeEditorId === id) activePath = "";
+    const view = editorViews.get(id);
+    if (view) swapEditorState(createEditorState("", false), 0, id);
+    if (activeEditorId === id && editorPanes.every((pane) => !editorPaths.get(pane.id))) closeLanguageServer();
   }
   function setTabDirty(path: string, value: boolean) {
-    const tab = tabs.find((item) => item.path === path);
+    const tab = findTab(path);
     if (tab && tab.dirty !== value) tab.dirty = value;
   }
-  function setActiveEditorSide(side: EditorSide) {
-    activeEditorSide = side;
-    editorView = editorViews.get(side);
-    activePath = editorPaths.get(side) ?? "";
+  function createEditorPane(): EditorPane {
+    return { id: crypto.randomUUID(), name: `編輯器 ${editorPanes.length + 1}`, tabs: [] };
+  }
+  function createEditorView(id: string, element?: HTMLDivElement) {
+    if (!element || editorViews.has(id)) return;
+    const view = new EditorView({ state: createEditorState("", false), parent: element });
+    editorViews.set(id, view);
+    editorStates.set(id, view.state);
+    editorPaths.set(id, "");
+    if (activeEditorId === id) editorView = view;
+  }
+  function setActiveEditorPane(id: string) {
+    activeEditorId = id;
+    editorView = editorViews.get(id);
+    activePath = editorPaths.get(id) ?? "";
     if (uiMode === "code") editorView?.focus();
   }
   function startSplitDrag(event: PointerEvent) {
@@ -303,25 +305,43 @@
       saveLayout();
     }
   }
-  function focusSide(side: EditorSide) { if (activeEditorSide !== side) setActiveEditorSide(side); }
-  async function toggleSplit() {
-    if (!splitEditor) {
-      splitEditor = true;
-      await tick();
-      editorViews.get("right")?.requestMeasure();
-      return;
-    }
-    // 合併：右側的檔案保留在分頁列，只是不再顯示；狀態先存回 tabStates。
-    if (activeEditorSide === "right") setActiveEditorSide("left");
-    stashActiveTab("right");
-    clearEditor("right");
-    splitEditor = false;
+  function addEditorPane() {
+    const id = crypto.randomUUID();
+    const pane = { id, name: `編輯器 ${editorPanes.length + 1}`, tabs: [] };
+    editorPanes = [...editorPanes, pane];
+    splitEditor = true;
+    activeEditorId = id;
+    setActiveEditorPane(id);
+    void tick().then(() => createEditorView(id, editorHosts[id]));
+  }
+  function focusPane(id: string) {
+    if (activeEditorId !== id) setActiveEditorPane(id);
+  }
+  function removeEditorPane(id: string) {
+    if (editorPanes.length <= 1) return;
+    const index = editorPanes.findIndex((pane) => pane.id === id);
+    if (index < 0) return;
+    const next = editorPanes.filter((pane) => pane.id !== id);
+    const pane = editorPanes[index];
+    for (const tab of pane.tabs) { tabStates.delete(tab.path); tabScroll.delete(tab.path); }
+    const view = editorViews.get(id);
+    if (view) view.destroy();
+    editorViews.delete(id);
+    editorStates.delete(id);
+    editorPaths.delete(id);
+    delete editorHosts[id];
+    editorPanes = next;
+    const fallback = next[Math.max(0, index - 1)] ?? next[0];
+    activeEditorId = fallback.id;
+    setActiveEditorPane(fallback.id);
+    splitEditor = editorPanes.length > 1;
   }
   function baseName(path: string) { return path.split(/[\\/]/).at(-1) ?? path; }
   // Windows 路徑不分大小寫、斜線方向可能不同，比較時先正規化。
   function normalizePath(path: string) { return path.replace(/\//g, "\\").toLowerCase(); }
   function samePath(a: string, b: string) { return normalizePath(a) === normalizePath(b); }
-  function findTab(path: string) { return tabs.find((tab) => samePath(tab.path, path)); }
+  function tabsFor(id: string) { return editorPanes.find((pane) => pane.id === id)?.tabs ?? []; }
+  function findTab(path: string) { return editorPanes.flatMap((pane) => pane.tabs).find((tab) => samePath(tab.path, path)); }
   function isInsideProject(path: string) {
     if (!projectPath || path.length <= projectPath.length) return false;
     return samePath(path.slice(0, projectPath.length), projectPath) && /[\\/]/.test(path[projectPath.length]);
@@ -329,7 +349,7 @@
   // 分頁標籤：預設只顯示檔名；有同名檔案同時開啟時加上上層資料夾以區分。
   function tabLabel(path: string) {
     const name = baseName(path);
-    const clash = tabs.some((tab) => tab.path !== path && baseName(tab.path).toLowerCase() === name.toLowerCase());
+    const clash = editorPanes.flatMap((pane) => pane.tabs).some((tab) => tab.path !== path && baseName(tab.path).toLowerCase() === name.toLowerCase());
     if (!clash) return name;
     const parts = path.split(/[\\/]/);
     return parts.length > 1 ? `${parts.at(-2)}/${name}` : name;
@@ -579,7 +599,7 @@
     saveLayout();
   }
   function confirmDiscardChanges() {
-    const unsaved = tabs.filter((tab) => tab.dirty);
+    const unsaved = editorPanes.flatMap((pane) => pane.tabs).filter((tab) => tab.dirty);
     if (!unsaved.length) return true;
     const names = unsaved.map((tab) => tabLabel(tab.path)).join("、");
     return window.confirm(unsaved.length === 1 ? `「${names}」有尚未儲存的變更，要捨棄嗎？` : `有 ${unsaved.length} 個檔案尚未儲存（${names}），要捨棄嗎？`);
@@ -591,86 +611,94 @@
     if (path) filePaths = await invoke<string[]>("list_source_files", { projectPath: path });
   }
   // 開啟檔案：已開啟就切過去，否則讀檔後新增一個分頁。
-  async function openFile(path: string, side: EditorSide = activeEditorSide) {
-    if (side === "right") splitEditor = true;
+  async function openFile(path: string, id: string = activeEditorId) {
+    const pane = editorPanes.find((item) => item.id === id);
+    if (!pane) return;
     const existing = findTab(path);
-    if (existing) { await activateTab(existing.path, side); return; }
+    if (existing) { const owner = editorPanes.find((item) => item.tabs.some((tab) => samePath(tab.path, path))); if (owner) await activateTab(path, owner.id); return; }
     try {
       const contents = await invoke<string>("read_source", { path });
-      stashActiveTab(side);
+      stashActiveTab(id);
       tabStates.set(path, createEditorState(contents, true));
-      tabs = [...tabs, { path, dirty: false }];
-      editorPaths.set(side, path);
-      activeEditorSide = side;
+      editorPanes = editorPanes.map((item) => item.id === id ? { ...item, tabs: [...item.tabs, { path, dirty: false }] } : item);
+      editorPaths.set(id, path);
+      activeEditorId = id;
       activePath = path;
-      editorView = editorViews.get(side)!;
-      swapEditorState(tabStates.get(path)!, 0, side);
+      editorView = editorViews.get(id)!;
+      swapEditorState(tabStates.get(path)!, 0, id);
       if (uiMode === "code") editorView?.focus();
       setNotice(`已開啟 ${relativeFile(path)}`);
       await connectLanguageServer(path);
     } catch (error) { setNotice(String(error), "error"); }
   }
-  async function activateTab(path: string, side: EditorSide = activeEditorSide) {
+  async function activateTab(path: string, id: string = activeEditorId) {
     const state = tabStates.get(path);
     if (!state) return;
-    if (side === "right") splitEditor = true;
-    // 同一個檔案同時只放在一個窗格（兩個獨立 EditorState 會各自分岔）；已在另一側就直接切過去。
-    const holder = (["left", "right"] as const).find((s) => s !== side && editorPaths.get(s) && samePath(editorPaths.get(s)!, path));
-    if (holder) { setActiveEditorSide(holder); return; }
-    const previousSide = activeEditorSide;
-    stashActiveTab(side);
-    editorPaths.set(side, path);
-    activeEditorSide = side;
-    editorView = editorViews.get(side)!;
+    const pane = editorPanes.find((item) => item.id === id);
+    if (!pane) return;
+    const previousId = activeEditorId;
+    stashActiveTab(id);
+    editorPaths.set(id, path);
+    activeEditorId = id;
+    editorView = editorViews.get(id)!;
     activePath = path;
-    swapEditorState(state, tabScroll.get(path) ?? 0, side);
+    swapEditorState(state, tabScroll.get(path) ?? 0, id);
     if (uiMode === "code") editorView?.focus();
-    if (previousSide !== side) void connectLanguageServer(path);
+    if (previousId !== id) void connectLanguageServer(path);
     else await connectLanguageServer(path);
   }
   function cycleTab(direction: 1 | -1) {
-    if (tabs.length < 2) return;
-    const index = tabs.findIndex((tab) => tab.path === activePath);
-    void activateTab(tabs[(index + direction + tabs.length) % tabs.length].path);
+    const currentTabs = tabsFor(activeEditorId);
+    if (currentTabs.length < 2) return;
+    const index = currentTabs.findIndex((tab) => tab.path === activePath);
+    void activateTab(currentTabs[(index + direction + currentTabs.length) % currentTabs.length].path, activeEditorId);
   }
-  function closeTab(path: string) {
-    const index = tabs.findIndex((tab) => tab.path === path);
+  function closeTab(path: string, id: string = activeEditorId) {
+    const pane = editorPanes.find((item) => item.id === id);
+    const currentTabs = pane?.tabs ?? [];
+    const index = currentTabs.findIndex((tab) => samePath(tab.path, path));
     if (index < 0) return;
-    if (tabs[index].dirty && !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)) return;
-    const sideToKeep = activeEditorSide;
-    tabs = tabs.filter((tab) => tab.path !== path);
+    if (currentTabs[index].dirty && !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)) return;
+    const next = currentTabs[Math.min(index, currentTabs.length - 1)];
+    const nextTabs = currentTabs.filter((tab) => !samePath(tab.path, path));
+    editorPanes = editorPanes.map((item) => item.id === id ? { ...item, tabs: nextTabs } : item);
     tabStates.delete(path);
     tabScroll.delete(path);
-    if (editorPaths.get("left") === path) clearEditor("left");
-    if (editorPaths.get("right") === path) clearEditor("right");
+    if (editorPaths.get(id) === path) clearEditor(id);
     if (path !== activePath) return;
-    const next = tabs[Math.min(index, tabs.length - 1)];
-    if (!next) { clearEditor(sideToKeep); return; }
-    activeEditorSide = sideToKeep;
-    activePath = next.path;
-    editorView = editorViews.get(sideToKeep)!;
-    editorPaths.set(sideToKeep, next.path);
-    swapEditorState(tabStates.get(next.path)!, tabScroll.get(next.path) ?? 0, sideToKeep);
-    if (uiMode === "code") editorView?.focus();
-    void connectLanguageServer(next.path);
+    if (!next) {
+      const fallback = editorPanes.find((item) => item.id !== id && item.tabs[0]);
+      if (fallback) { void activateTab(fallback.tabs[0].path, fallback.id); return; }
+      if (editorPanes.length > 1) { removeEditorPane(id); return; }
+      clearEditor(id);
+      return;
+    }
+    void activateTab(next.path, id);
   }
   function closeAllTabs() {
-    tabs = [];
+    editorPanes = editorPanes.map((pane) => ({ ...pane, tabs: [] }));
     tabStates.clear();
     tabScroll.clear();
-    clearEditor("left");
-    clearEditor("right");
+    for (const pane of editorPanes) clearEditor(pane.id);
+    editorPanes = [{ ...createEditorPane(), tabs: [] }];
+    activeEditorId = editorPanes[0].id;
+    setActiveEditorPane(activeEditorId);
   }
-  function scrollTabs(event: WheelEvent) {
-    if (!tabStripElement || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-    tabStripElement.scrollLeft += event.deltaY;
+  function paneName(id: string) {
+    return editorPanes.find((pane) => pane.id === id)?.name ?? "編輯區塊";
   }
-  // 目前分頁變動或新增分頁時，把作用中的分頁捲到可見範圍。
+  function scrollTabs(event: WheelEvent, id: string) {
+    const element = tabStripElements[id];
+    if (!element || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    element.scrollLeft += event.deltaY;
+  }
+  // 目前分頁變動或新增分頁時，把作用中的分頁捨到可見範圍。
   $effect(() => {
     const path = activePath;
-    void tabs.length;
-    if (!tabStripElement || !path) return;
-    void tick().then(() => tabStripElement?.querySelector<HTMLElement>(".editor-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    const strip = tabStripElements[activeEditorId];
+    void tabsFor(activeEditorId).length;
+    if (!strip || !path) return;
+    void tick().then(() => strip?.querySelector<HTMLElement>(".editor-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
   });
   async function openProject() {
     if (!confirmDiscardChanges()) return;
@@ -744,14 +772,14 @@
     } catch (error) { setNotice(String(error), "error"); return false; }
   }
   async function saveOtherDirtyTabs(): Promise<boolean> {
-    for (const tab of tabs.filter((item) => item.dirty && item.path !== activePath)) {
+    for (const tab of editorPanes.flatMap((pane) => pane.tabs).filter((item) => item.dirty && item.path !== activePath)) {
       try { await writeTab(tab.path); }
       catch (error) { setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error"); return false; }
     }
     return true;
   }
   async function saveAllTabs() {
-    const targets = tabs.filter((tab) => tab.dirty);
+    const targets = editorPanes.flatMap((pane) => pane.tabs).filter((tab) => tab.dirty);
     if (!targets.length) { setNotice("沒有需要儲存的檔案"); return; }
     for (const tab of targets) {
       try { await writeTab(tab.path); }
@@ -787,7 +815,7 @@
       if (activePath && !event.repeat) closeTab(activePath);
     } else if (event.code === "Backslash" && !event.shiftKey) {
       event.preventDefault();
-      if (!event.repeat) void toggleSplit();
+      if (!event.repeat) addEditorPane();
     } else if (event.key === "Tab" || (!event.shiftKey && (event.key === "PageUp" || event.key === "PageDown"))) {
       event.preventDefault();
       cycleTab(event.key === "PageUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1);
@@ -966,57 +994,47 @@
     <aside class="sidebar">
       <section class="side-section files-section">
         <div class="section-heading"><span>專案檔案 <small>{filePaths.length}</small></span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
-        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)} title={`開啟於 ${activeEditorSide === "left" ? "左側" : "右側"}`}
-          oncontextmenu={(event) => { event.preventDefault(); void openFile(file, activeEditorSide === "left" ? "right" : "left"); }}
+        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)} title={`開啟於 ${paneName(activeEditorId)}`}
+          oncontextmenu={(event) => { event.preventDefault(); const target = editorPanes.find((pane) => pane.id !== activeEditorId); if (target) void openFile(file, target.id); }}
         ><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if isPathDirty(file)}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
         {:else}<p class="empty-note">開啟資料夾以瀏覽來源檔</p>{/if}
       </section>
     </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
       <div class="editor-tabbar">
-        <div class="editor-tabs" role="tablist" aria-label="已開啟的檔案" bind:this={tabStripElement} onwheel={scrollTabs}>
-          {#each tabs as tab (tab.path)}
-            <div class="editor-tab" class:active={tab.path === activePath} class:shown={tab.path !== activePath && (editorPaths.get("left") === tab.path || editorPaths.get("right") === tab.path)} class:dirty={tab.dirty}>
-              <button type="button" class="tab-main" role="tab" aria-selected={tab.path === activePath} title={tab.path}
-                onclick={() => activateTab(tab.path)}
-                onmousedown={(event) => { if (event.button === 1) event.preventDefault(); }}
-                onauxclick={(event) => { if (event.button === 1) { event.preventDefault(); closeTab(tab.path); } }}
-              ><FileCode2 size={14} /><span>{tabLabel(tab.path)}</span></button>
-              <button type="button" class="tab-close" title="關閉 (Ctrl+W)" aria-label={`關閉 ${tabLabel(tab.path)}`} onclick={() => closeTab(tab.path)}><i class="tab-dirty-dot"></i><X size={13} /></button>
-            </div>
-          {:else}
-            <div class="editor-tab empty-tab active"><span class="tab-main"><FileCode2 size={14} /><span>尚未開啟檔案</span></span></div>
-          {/each}
-        </div>
+        {#each editorPanes as pane (pane.id)}
+          <div class="editor-tabs" class:editor-tabs-hidden={!splitEditor && pane.id !== activeEditorId} role="tablist" aria-label={`${pane.name} 已開啟的檔案`} bind:this={tabStripElements[pane.id]} onwheel={(event) => scrollTabs(event, pane.id)}>
+            {#each pane.tabs as tab (tab.path)}
+              <div class="editor-tab" class:active={tab.path === activePath && pane.id === activeEditorId} class:dirty={tab.dirty}>
+                <button type="button" class="tab-main" role="tab" aria-selected={tab.path === activePath && pane.id === activeEditorId} title={tab.path}
+                  onclick={() => activateTab(tab.path, pane.id)}
+                  onmousedown={(event) => { if (event.button === 1) event.preventDefault(); }}
+                  onauxclick={(event) => { if (event.button === 1) { event.preventDefault(); closeTab(tab.path, pane.id); } }}
+                ><FileCode2 size={14} /><span>{tabLabel(tab.path)}</span></button>
+                <button type="button" class="tab-close" title="關閉 (Ctrl+W)" aria-label={`關閉 ${tabLabel(tab.path)}`} onclick={() => closeTab(tab.path, pane.id)}><i class="tab-dirty-dot"></i><X size={13} /></button>
+              </div>
+            {:else}
+              <div class="editor-tab empty-tab active"><span class="tab-main"><FileCode2 size={14} /><span>{pane.name} · 尚未開啟檔案</span></span></div>
+            {/each}
+          </div>
+        {/each}
         <div class="editor-tools">
-          <button type="button" class="editor-split-toggle" aria-pressed={splitEditor} title={splitEditor ? "合併編輯器 (Ctrl+\\)" : "左右分割編輯器 (Ctrl+\\)"} onclick={toggleSplit}>
-            {splitEditor ? "合併" : "左右分割"}
-          </button>
+          <button type="button" class="editor-split-toggle" aria-pressed={splitEditor} title="新增編輯區塊" onclick={addEditorPane}><CirclePlus size={13} />新增編輯區塊</button>
           <div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div>
         </div>
       </div>
       <div class="editor-wrap" class:split={splitEditor} class:dragging={splitDrag !== null} bind:this={editorWrapElement} style={`--split-cols:minmax(0,${splitRatio}fr) 6px minmax(0,${1 - splitRatio}fr)`} inert={uiMode !== "code"}>
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="editor-pane" class:active={activeEditorSide === "left"} onfocusin={() => focusSide("left")} onpointerdown={() => focusSide("left")}>
-          <div class="editor-pane-header">
-            <span title={editorPaths.get("left") || undefined}>{editorPaths.get("left") ? tabLabel(editorPaths.get("left")!) : "左側編輯器"}</span>
-            <button type="button" class="mini-icon" title="切換至左側編輯器" aria-label="切換至左側編輯器" onclick={() => setActiveEditorSide("left")}><FileCode2 size={13} /></button>
+        {#each editorPanes as pane (pane.id)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="editor-pane" class:active={pane.id === activeEditorId} class:editor-pane-hidden={!splitEditor && pane.id !== activeEditorId} onfocusin={() => focusPane(pane.id)} onpointerdown={() => focusPane(pane.id)}>
+            <div class="editor-host" bind:this={editorHosts[pane.id]}></div>
+            {#if pane.tabs.length > 0 && !editorPaths.get(pane.id)}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
           </div>
-          <div class="editor-host" bind:this={leftEditorElement}></div>
-          {#if tabs.length > 0 && !editorPaths.get("left")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
-        </div>
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-        <div class="editor-divider" role="separator" aria-orientation="vertical" aria-label="調整左右編輯器寬度" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(splitRatio * 100)} tabindex="0" title="拖曳調整寬度，雙擊還原" onpointerdown={startSplitDrag} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={() => { splitRatio = 0.5; saveLayout(); }} onkeydown={splitDividerKey}></div>
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="editor-pane editor-pane-right" class:active={activeEditorSide === "right"} onfocusin={() => focusSide("right")} onpointerdown={() => focusSide("right")}>
-          <div class="editor-pane-header">
-            <span title={editorPaths.get("right") || undefined}>{editorPaths.get("right") ? tabLabel(editorPaths.get("right")!) : "右側編輯器"}</span>
-            <button type="button" class="mini-icon" title="切換至右側編輯器" aria-label="切換至右側編輯器" onclick={() => setActiveEditorSide("right")}><FileCode2 size={13} /></button>
-          </div>
-          <div class="editor-host" bind:this={rightEditorElement}></div>
-          {#if tabs.length > 0 && !editorPaths.get("right")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
-        </div>
-        {#if tabs.length === 0}
+          {#if splitEditor && pane.id !== editorPanes.at(-1)?.id}
+            <button type="button" class="editor-divider" aria-label="調整編輯器寬度" title="拖曳調整寬度，雙擊還原" onpointerdown={startSplitDrag} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={() => { splitRatio = 0.5; saveLayout(); }} onkeydown={splitDividerKey}></button>
+          {/if}
+        {/each}
+        {#if editorPanes.length === 0}
           <div class="editor-empty">
             <FileCode2 size={30} />
             <strong>尚未開啟任何檔案</strong>
@@ -1028,7 +1046,6 @@
           </div>
         {/if}
       </div>
-      <div class="editor-status"><span>{activePath ? relativeFile(activePath) : "無檔案"}</span><span class:ready={clangdStatus === "clangd IntelliSense"} class:unavailable={clangdStatus.startsWith("IntelliSense 無法") || clangdStatus.startsWith("clangd:")} class="clangd-status" title={clangdStatus}>{clangdStatus}</span><span>C++17</span><span>UTF-8</span><span>LF</span></div>
     </section>
     <aside class="case-sidebar">
       <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="case-editor-button" title="開啟測資編輯器" aria-label="開啟測資編輯器" onclick={openTestManager}><Pencil size={13} />編輯測資</button></div>
@@ -1134,7 +1151,6 @@
       {#if activeTest}
         <div class="case-name-row">
           <input class="case-name" value={activeTest.name} aria-label="測資名稱" placeholder="請輸入測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
-          <button class="run-case-button" onclick={() => runTests(false)} disabled={busy !== "" || !hasFile} title="執行目前測資"><Play size={14} fill="currentColor" /></button>
           <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button>
         </div>
         <label class="code-field-label" for="test-input">STANDARD INPUT</label><textarea id="test-input" class="case-textarea" value={activeTest.input} oninput={(event) => updateTest(activeTest.id, "input", event.currentTarget.value)} spellcheck="false"></textarea>
