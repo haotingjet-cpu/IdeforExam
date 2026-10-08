@@ -1003,7 +1003,7 @@
             <button type="button" class="mini-icon" title="切換至左側編輯器" aria-label="切換至左側編輯器" onclick={() => setActiveEditorSide("left")}><FileCode2 size={13} /></button>
           </div>
           <div class="editor-host" bind:this={leftEditorElement}></div>
-          {#if !editorPaths.get("left")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+          {#if tabs.length > 0 && !editorPaths.get("left")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
         </div>
         <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
         <div class="editor-divider" role="separator" aria-orientation="vertical" aria-label="調整左右編輯器寬度" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(splitRatio * 100)} tabindex="0" title="拖曳調整寬度，雙擊還原" onpointerdown={startSplitDrag} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={() => { splitRatio = 0.5; saveLayout(); }} onkeydown={splitDividerKey}></div>
@@ -1014,7 +1014,7 @@
             <button type="button" class="mini-icon" title="切換至右側編輯器" aria-label="切換至右側編輯器" onclick={() => setActiveEditorSide("right")}><FileCode2 size={13} /></button>
           </div>
           <div class="editor-host" bind:this={rightEditorElement}></div>
-          {#if !editorPaths.get("right")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+          {#if tabs.length > 0 && !editorPaths.get("right")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
         </div>
         {#if tabs.length === 0}
           <div class="editor-empty">
