@@ -1,64 +1,83 @@
-import { marked } from "marked";
+import { Marked } from "marked";
 import markedKatex from "marked-katex-extension";
 
-const renderer = new marked.Renderer();
+// 使用獨立的 Marked 實例，避免污染全域 marked 設定。
+const md = new Marked({ gfm: true, breaks: true });
 
-renderer.link = (token) => {
-  const href = token.href ?? "";
-  const label = token.text ?? href;
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-};
+const escapeAttr = (value: string) =>
+  value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-renderer.image = (token) => {
-  const src = token.href ?? "";
-  const alt = token.text ?? "";
-  return `<img src="${src}" alt="${alt}" loading="lazy" decoding="async" />`;
-};
+md.use({
+  renderer: {
+    // 連結文字走 parseInline，讓 [**粗體**](url) 之類的巢狀語法能正常渲染。
+    link(token) {
+      const label = this.parser.parseInline(token.tokens);
+      return `<a href="${escapeAttr(token.href ?? "")}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    },
+    image(token) {
+      return `<img src="${escapeAttr(token.href ?? "")}" alt="${escapeAttr(token.text ?? "")}" loading="lazy" decoding="async" />`;
+    }
+  }
+});
 
-marked.use({ renderer });
-marked.use(markedKatex({
+md.use(markedKatex({
   throwOnError: false,
-  output: "htmlAndMathml",
-  displayMode: false,
+  output: "html",     // 只輸出 HTML 版；MathML 會被 sanitizer 移除，留著只是白白變肥
+  nonStandard: true,  // 允許 "令$n$個" 這種前後沒有空白的寫法（中文幾乎都是這樣）
   trust: false,
-  strict: "warn",
-  macros: {}
+  strict: "ignore"
 }));
 
-const SAFE_TAGS = new Set(["A", "ABBR", "B", "BLOCKQUOTE", "BR", "CODE", "DEL", "DETAILS", "EM", "FIGURE", "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "KBD", "LI", "MARK", "OL", "P", "PRE", "S", "SAMP", "SMALL", "SPAN", "STRONG", "SUB", "SUP", "TABLE", "TBODY", "TD", "TH", "THEAD", "TR", "UL"]);
+const SAFE_TAGS = new Set([
+  "a", "abbr", "b", "blockquote", "br", "code", "del", "details", "summary", "em", "figure", "figcaption",
+  "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "kbd", "li", "mark", "ol", "p", "pre", "s", "samp",
+  "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "tr", "ul"
+]);
+// KaTeX 的根號、長括號等符號是用 inline SVG 畫的，只在 .katex 內放行這幾個標籤。
+const KATEX_SVG_TAGS = new Set(["svg", "path", "line"]);
 
-function sanitizeHtml(html: string): string {
+function resolveUrl(value: string, baseUrl?: string): string | null {
+  try {
+    const url = new URL(value.trim(), baseUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeHtml(html: string, baseUrl?: string): string {
   const container = document.createElement("div");
   container.innerHTML = html;
 
-  container.querySelectorAll("script, style, iframe, object, embed, svg, math, link, template").forEach((node) => node.remove());
+  container.querySelectorAll("script, style, iframe, object, embed, math, link, template, foreignObject").forEach((node) => node.remove());
 
-  container.querySelectorAll("*").forEach((element) => {
-    if (!SAFE_TAGS.has(element.tagName)) {
-      const children = Array.from(element.childNodes);
-      if (children.length > 0) {
-        element.replaceWith(...children);
-      } else {
-        element.remove();
-      }
-      return;
+  for (const element of Array.from(container.querySelectorAll("*"))) {
+    const tag = element.localName;
+    const inMath = element.closest(".katex") !== null;
+    if (!SAFE_TAGS.has(tag) && !(inMath && KATEX_SVG_TAGS.has(tag))) {
+      element.replaceWith(...Array.from(element.childNodes));
+      continue;
     }
 
     for (const attribute of Array.from(element.attributes)) {
       const name = attribute.name.toLowerCase();
-      if (name.startsWith("on")) element.removeAttribute(attribute.name);
-      if (name === "href" || name === "src") {
-        const value = attribute.value.trim();
-        if (!/^https?:\/\//i.test(value)) element.removeAttribute(attribute.name);
+      if (name.startsWith("on")) { element.removeAttribute(attribute.name); continue; }
+      // KaTeX 靠 inline style 排版；其餘地方不允許 style，避免 url() 之類的外連。
+      if (name === "style" && !inMath) { element.removeAttribute(attribute.name); continue; }
+      if (name === "href" || name === "src" || name === "xlink:href") {
+        const resolved = resolveUrl(attribute.value, baseUrl);
+        if (resolved) element.setAttribute(attribute.name, resolved);
+        else element.removeAttribute(attribute.name);
       }
     }
-  });
+  }
 
   return container.innerHTML;
 }
 
-export async function renderProblemMarkdown(source: string): Promise<string> {
+// baseUrl：題目網址，用來把題目中的相對路徑圖片／連結補成完整網址。
+export async function renderProblemMarkdown(source: string, baseUrl?: string): Promise<string> {
   if (!source.trim()) return "";
-  const html = await marked.parse(source, { breaks: true, gfm: true });
-  return sanitizeHtml(html);
+  const html = await md.parse(source);
+  return sanitizeHtml(html, baseUrl);
 }

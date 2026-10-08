@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -11,6 +12,7 @@
   import { cpp } from "@codemirror/lang-cpp";
   import { closeSearchPanel, getSearchQuery, search, searchKeymap, setSearchQuery } from "@codemirror/search";
   import localforage from "localforage";
+  import "katex/dist/katex.min.css";
   import { LanguageServerClient, languageServerWithTransport } from "codemirror-languageserver";
   import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
 
@@ -26,10 +28,21 @@
   import { renderProblemMarkdown } from "./workbench/markdown";
 
 
-  let editorElement: HTMLDivElement;
+  let leftEditorElement = $state<HTMLDivElement>();
+  let rightEditorElement = $state<HTMLDivElement>();
   let editorPanelElement: HTMLElement;
   let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
+  type EditorSide = "left" | "right";
+  let activeEditorSide = $state<EditorSide>("left");
+  let splitEditor = $state(false);
+  let splitRatio = $state(0.5); // 左側窗格寬度占比
+  let editorWrapElement = $state<HTMLElement | undefined>();
+  let splitDrag = $state<{ pointerId: number } | null>(null);
+  const editorViews = new Map<EditorSide, EditorView>();
+  const editorStates = new Map<EditorSide, EditorState>();
+  // 要用 SvelteMap：樣板會讀它來決定「尚未開啟檔案」的遮罩與窗格標題，一般 Map 不會觸發更新。
+  const editorPaths = new SvelteMap<EditorSide, string>();
   const lspCompartment = new Compartment();
   const editableCompartment = new Compartment();
   let lspTransport: TauriLspTransport | undefined;
@@ -96,7 +109,6 @@
   let problemStatus = $state("尚未讀取題目");
   let problemLoading = $state(false);
   let problemError = $state("");
-  let activeProblemSection = $state<"description" | "input" | "output">("description");
   let problemSections: Array<{ id: "description" | "input" | "output"; label: string }> = [
     { id: "description", label: "Description" },
     { id: "input", label: "Input Format" },
@@ -105,7 +117,7 @@
   let sidebarWidth = $state(205);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
-  let consoleOpen = $state(true);
+  let consoleOpen = $state(false);
   let editorHeight = $state(330);
   let testHeight = $state(210);
   let sidebarHeight = $state(130);
@@ -150,6 +162,7 @@
       if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
       if (typeof layout.consoleOpen === "boolean") consoleOpen = layout.consoleOpen;
       if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
+      if (typeof layout.splitRatio === "number") splitRatio = Math.min(0.8, Math.max(0.2, layout.splitRatio));
       if (typeof layout.editorHeight === "number") editorHeight = clamp(layout.editorHeight, 240, 560);
       if (typeof layout.testHeight === "number") testHeight = clamp(layout.testHeight, 180, 420);
       if (typeof layout.sidebarHeight === "number") sidebarHeight = clamp(layout.sidebarHeight, 100, 240);
@@ -161,7 +174,17 @@
       localStorage.removeItem(layoutStorageKey);
     }
 
-    editorView = new EditorView({ state: createEditorState("", false), parent: editorElement });
+    const createEditorView = (side: EditorSide, element: HTMLDivElement) => {
+      const view = new EditorView({ state: createEditorState("", false), parent: element });
+      editorViews.set(side, view);
+      editorStates.set(side, view.state);
+      editorPaths.set(side, "");
+      if (side === "left") editorView = view;
+      return view;
+    };
+    createEditorView("left", leftEditorElement!);
+    createEditorView("right", rightEditorElement!);
+    setActiveEditorSide("left");
 
     localforage.getItem<TestCase[]>(storageKey)
       .then((parsed) => {
@@ -179,7 +202,7 @@
       unlistenResize?.();
       window.removeEventListener("resize", updateViewportMode);
       closeLanguageServer();
-      editorView?.destroy();
+      for (const view of editorViews.values()) view.destroy();
     };
   });
 
@@ -204,7 +227,9 @@
         lspCompartment.of([]),
         editableCompartment.of(editableExtensions(editable)),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged && activePath) setTabDirty(activePath, true);
+          if (!update.docChanged) return;
+          // 以「發生變更的那個編輯器」對應的檔案標記未儲存，而不是 activePath（分割後兩邊都可能被編輯）。
+          for (const [side, view] of editorViews) if (view === update.view) setTabDirty(editorPaths.get(side) ?? "", true);
         }),
         EditorView.lineWrapping,
         editorTheme
@@ -212,31 +237,85 @@
     });
   }
   // 整份換上另一個分頁的狀態；搜尋字串（Ctrl+F 的查詢）會跟著帶過去，面板則收起。
-  function swapEditorState(next: EditorState, scrollTop = 0) {
-    const view = editorView;
+  function swapEditorState(next: EditorState, scrollTop = 0, side: EditorSide = activeEditorSide) {
+    const view = editorViews.get(side);
     if (!view) return;
     const query = getSearchQuery(view.state);
     view.setState(next);
+    editorStates.set(side, next);
     if (query.search) view.dispatch({ effects: setSearchQuery.of(query) });
     requestAnimationFrame(() => { view.scrollDOM.scrollTop = scrollTop; });
   }
   // 離開目前分頁前，把編輯器狀態存回 Map（先卸掉 LSP 外掛，回來時再由 connectLanguageServer 掛上）。
-  function stashActiveTab() {
-    const view = editorView;
-    if (!view || !activePath) return;
+  function stashActiveTab(side: EditorSide = activeEditorSide) {
+    const view = editorViews.get(side);
+    const path = editorPaths.get(side);
+    if (!view || !path) return;
     closeSearchPanel(view);
     view.dispatch({ effects: lspCompartment.reconfigure([]) });
-    tabStates.set(activePath, view.state);
-    tabScroll.set(activePath, view.scrollDOM.scrollTop);
+    tabStates.set(path, view.state);
+    tabScroll.set(path, view.scrollDOM.scrollTop);
   }
-  function clearEditor() {
-    activePath = "";
-    swapEditorState(createEditorState("", false));
-    closeLanguageServer();
+  function otherSide(side: EditorSide): EditorSide { return side === "left" ? "right" : "left"; }
+  function clearEditor(side: EditorSide = activeEditorSide) {
+    editorPaths.set(side, "");
+    if (activeEditorSide === side) activePath = "";
+    const view = editorViews.get(side);
+    if (view) swapEditorState(createEditorState("", false), 0, side);
+    // 另一側還開著檔案時不要關掉共用的 language server。
+    if (activeEditorSide === side && !editorPaths.get(otherSide(side))) closeLanguageServer();
   }
   function setTabDirty(path: string, value: boolean) {
     const tab = tabs.find((item) => item.path === path);
     if (tab && tab.dirty !== value) tab.dirty = value;
+  }
+  function setActiveEditorSide(side: EditorSide) {
+    activeEditorSide = side;
+    editorView = editorViews.get(side);
+    activePath = editorPaths.get(side) ?? "";
+    if (uiMode === "code") editorView?.focus();
+  }
+  function startSplitDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    splitDrag = { pointerId: event.pointerId };
+  }
+  function moveSplitDrag(event: PointerEvent) {
+    if (!splitDrag || splitDrag.pointerId !== event.pointerId || !editorWrapElement) return;
+    const rect = editorWrapElement.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    splitRatio = Math.min(0.8, Math.max(0.2, (event.clientX - rect.left) / rect.width));
+  }
+  function endSplitDrag(event: PointerEvent) {
+    if (!splitDrag || splitDrag.pointerId !== event.pointerId) return;
+    splitDrag = null;
+    saveLayout();
+  }
+  function splitDividerKey(event: KeyboardEvent) {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      splitRatio = Math.min(0.8, Math.max(0.2, splitRatio + (event.key === "ArrowLeft" ? -0.02 : 0.02)));
+      saveLayout();
+    } else if (event.key === "Home" || event.key === "Enter") {
+      event.preventDefault();
+      splitRatio = 0.5;
+      saveLayout();
+    }
+  }
+  function focusSide(side: EditorSide) { if (activeEditorSide !== side) setActiveEditorSide(side); }
+  async function toggleSplit() {
+    if (!splitEditor) {
+      splitEditor = true;
+      await tick();
+      editorViews.get("right")?.requestMeasure();
+      return;
+    }
+    // 合併：右側的檔案保留在分頁列，只是不再顯示；狀態先存回 tabStates。
+    if (activeEditorSide === "right") setActiveEditorSide("left");
+    stashActiveTab("right");
+    clearEditor("right");
+    splitEditor = false;
   }
   function baseName(path: string) { return path.split(/[\\/]/).at(-1) ?? path; }
   // Windows 路徑不分大小寫、斜線方向可能不同，比較時先正規化。
@@ -281,7 +360,6 @@
       const result = await invoke<TiojProblem>("get_problem", { targetUrl: url });
       problem = result;
       await renderProblemContent();
-      activeProblemSection = "description";
       problemStatus = "題目讀取完成";
       setNotice("題目已載入", "success");
     } catch (error) {
@@ -300,15 +378,14 @@
     problemHtml = { description: "", input: "", output: "" };
     problemError = "";
     problemStatus = "尚未讀取題目";
-    activeProblemSection = "description";
     exitMode("problems");
   }
   async function renderProblemContent() {
     if (!problem) return;
     problemHtml = {
-      description: await renderProblemMarkdown(problem.description),
-      input: await renderProblemMarkdown(problem.inputFormat),
-      output: await renderProblemMarkdown(problem.outputFormat)
+      description: await renderProblemMarkdown(problem.description, problemUrl.trim()),
+      input: await renderProblemMarkdown(problem.inputFormat, problemUrl.trim()),
+      output: await renderProblemMarkdown(problem.outputFormat, problemUrl.trim())
     };
   }
   // 切換分頁可能很快，連線動作排成佇列依序執行，避免同時啜動多個 clangd；已不是目前分頁的請求直接略過。
@@ -397,7 +474,7 @@
   function toggleConsole() { setConsoleOpen(!consoleOpen); }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, splitRatio, diffCols: [...diffCols] }));
     } catch { /* Keep resizing available when local storage is unavailable. */ }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
@@ -514,30 +591,42 @@
     if (path) filePaths = await invoke<string[]>("list_source_files", { projectPath: path });
   }
   // 開啟檔案：已開啟就切過去，否則讀檔後新增一個分頁。
-  async function openFile(path: string) {
+  async function openFile(path: string, side: EditorSide = activeEditorSide) {
+    if (side === "right") splitEditor = true;
     const existing = findTab(path);
-    if (existing) { await activateTab(existing.path); return; }
+    if (existing) { await activateTab(existing.path, side); return; }
     try {
       const contents = await invoke<string>("read_source", { path });
-      stashActiveTab();
+      stashActiveTab(side);
       tabStates.set(path, createEditorState(contents, true));
       tabs = [...tabs, { path, dirty: false }];
+      editorPaths.set(side, path);
+      activeEditorSide = side;
       activePath = path;
-      swapEditorState(tabStates.get(path)!);
+      editorView = editorViews.get(side)!;
+      swapEditorState(tabStates.get(path)!, 0, side);
       if (uiMode === "code") editorView?.focus();
       setNotice(`已開啟 ${relativeFile(path)}`);
       await connectLanguageServer(path);
     } catch (error) { setNotice(String(error), "error"); }
   }
-  async function activateTab(path: string) {
-    if (path === activePath) { if (uiMode === "code") editorView?.focus(); return; }
+  async function activateTab(path: string, side: EditorSide = activeEditorSide) {
     const state = tabStates.get(path);
     if (!state) return;
-    stashActiveTab();
+    if (side === "right") splitEditor = true;
+    // 同一個檔案同時只放在一個窗格（兩個獨立 EditorState 會各自分岔）；已在另一側就直接切過去。
+    const holder = (["left", "right"] as const).find((s) => s !== side && editorPaths.get(s) && samePath(editorPaths.get(s)!, path));
+    if (holder) { setActiveEditorSide(holder); return; }
+    const previousSide = activeEditorSide;
+    stashActiveTab(side);
+    editorPaths.set(side, path);
+    activeEditorSide = side;
+    editorView = editorViews.get(side)!;
     activePath = path;
-    swapEditorState(state, tabScroll.get(path) ?? 0);
+    swapEditorState(state, tabScroll.get(path) ?? 0, side);
     if (uiMode === "code") editorView?.focus();
-    await connectLanguageServer(path);
+    if (previousSide !== side) void connectLanguageServer(path);
+    else await connectLanguageServer(path);
   }
   function cycleTab(direction: 1 | -1) {
     if (tabs.length < 2) return;
@@ -548,15 +637,20 @@
     const index = tabs.findIndex((tab) => tab.path === path);
     if (index < 0) return;
     if (tabs[index].dirty && !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)) return;
-    const wasActive = path === activePath;
+    const sideToKeep = activeEditorSide;
     tabs = tabs.filter((tab) => tab.path !== path);
     tabStates.delete(path);
     tabScroll.delete(path);
-    if (!wasActive) return;
+    if (editorPaths.get("left") === path) clearEditor("left");
+    if (editorPaths.get("right") === path) clearEditor("right");
+    if (path !== activePath) return;
     const next = tabs[Math.min(index, tabs.length - 1)];
-    if (!next) { clearEditor(); return; }
+    if (!next) { clearEditor(sideToKeep); return; }
+    activeEditorSide = sideToKeep;
     activePath = next.path;
-    swapEditorState(tabStates.get(next.path)!, tabScroll.get(next.path) ?? 0);
+    editorView = editorViews.get(sideToKeep)!;
+    editorPaths.set(sideToKeep, next.path);
+    swapEditorState(tabStates.get(next.path)!, tabScroll.get(next.path) ?? 0, sideToKeep);
     if (uiMode === "code") editorView?.focus();
     void connectLanguageServer(next.path);
   }
@@ -564,7 +658,8 @@
     tabs = [];
     tabStates.clear();
     tabScroll.clear();
-    clearEditor();
+    clearEditor("left");
+    clearEditor("right");
   }
   function scrollTabs(event: WheelEvent) {
     if (!tabStripElement || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
@@ -690,6 +785,9 @@
     if (key === "w" && !event.shiftKey) {
       event.preventDefault();
       if (activePath && !event.repeat) closeTab(activePath);
+    } else if (event.code === "Backslash" && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) void toggleSplit();
     } else if (event.key === "Tab" || (!event.shiftKey && (event.key === "PageUp" || event.key === "PageDown"))) {
       event.preventDefault();
       cycleTab(event.key === "PageUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1);
@@ -868,7 +966,9 @@
     <aside class="sidebar">
       <section class="side-section files-section">
         <div class="section-heading"><span>專案檔案 <small>{filePaths.length}</small></span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
-        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)}><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if isPathDirty(file)}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
+        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)} title={`開啟於 ${activeEditorSide === "left" ? "左側" : "右側"}`}
+          oncontextmenu={(event) => { event.preventDefault(); void openFile(file, activeEditorSide === "left" ? "right" : "left"); }}
+        ><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if isPathDirty(file)}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
         {:else}<p class="empty-note">開啟資料夾以瀏覽來源檔</p>{/if}
       </section>
     </aside>
@@ -876,7 +976,7 @@
       <div class="editor-tabbar">
         <div class="editor-tabs" role="tablist" aria-label="已開啟的檔案" bind:this={tabStripElement} onwheel={scrollTabs}>
           {#each tabs as tab (tab.path)}
-            <div class="editor-tab" class:active={tab.path === activePath} class:dirty={tab.dirty}>
+            <div class="editor-tab" class:active={tab.path === activePath} class:shown={tab.path !== activePath && (editorPaths.get("left") === tab.path || editorPaths.get("right") === tab.path)} class:dirty={tab.dirty}>
               <button type="button" class="tab-main" role="tab" aria-selected={tab.path === activePath} title={tab.path}
                 onclick={() => activateTab(tab.path)}
                 onmousedown={(event) => { if (event.button === 1) event.preventDefault(); }}
@@ -888,11 +988,35 @@
             <div class="editor-tab empty-tab active"><span class="tab-main"><FileCode2 size={14} /><span>尚未開啟檔案</span></span></div>
           {/each}
         </div>
-        <div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div>
+        <div class="editor-tools">
+          <button type="button" class="editor-split-toggle" aria-pressed={splitEditor} title={splitEditor ? "合併編輯器 (Ctrl+\\)" : "左右分割編輯器 (Ctrl+\\)"} onclick={toggleSplit}>
+            {splitEditor ? "合併" : "左右分割"}
+          </button>
+          <div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div>
+        </div>
       </div>
-      <div class="editor-wrap" inert={uiMode !== "code"}>
-        <div class="editor-host" bind:this={editorElement}></div>
-        {#if !hasFile}
+      <div class="editor-wrap" class:split={splitEditor} class:dragging={splitDrag !== null} bind:this={editorWrapElement} style={`--split-cols:minmax(0,${splitRatio}fr) 6px minmax(0,${1 - splitRatio}fr)`} inert={uiMode !== "code"}>
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="editor-pane" class:active={activeEditorSide === "left"} onfocusin={() => focusSide("left")} onpointerdown={() => focusSide("left")}>
+          <div class="editor-pane-header">
+            <span title={editorPaths.get("left") || undefined}>{editorPaths.get("left") ? tabLabel(editorPaths.get("left")!) : "左側編輯器"}</span>
+            <button type="button" class="mini-icon" title="切換至左側編輯器" aria-label="切換至左側編輯器" onclick={() => setActiveEditorSide("left")}><FileCode2 size={13} /></button>
+          </div>
+          <div class="editor-host" bind:this={leftEditorElement}></div>
+          {#if !editorPaths.get("left")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+        </div>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div class="editor-divider" role="separator" aria-orientation="vertical" aria-label="調整左右編輯器寬度" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(splitRatio * 100)} tabindex="0" title="拖曳調整寬度，雙擊還原" onpointerdown={startSplitDrag} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={() => { splitRatio = 0.5; saveLayout(); }} onkeydown={splitDividerKey}></div>
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="editor-pane editor-pane-right" class:active={activeEditorSide === "right"} onfocusin={() => focusSide("right")} onpointerdown={() => focusSide("right")}>
+          <div class="editor-pane-header">
+            <span title={editorPaths.get("right") || undefined}>{editorPaths.get("right") ? tabLabel(editorPaths.get("right")!) : "右側編輯器"}</span>
+            <button type="button" class="mini-icon" title="切換至右側編輯器" aria-label="切換至右側編輯器" onclick={() => setActiveEditorSide("right")}><FileCode2 size={13} /></button>
+          </div>
+          <div class="editor-host" bind:this={rightEditorElement}></div>
+          {#if !editorPaths.get("right")}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+        </div>
+        {#if tabs.length === 0}
           <div class="editor-empty">
             <FileCode2 size={30} />
             <strong>尚未開啟任何檔案</strong>
@@ -985,19 +1109,15 @@
   </form>
   {#if problem}
     <div class="problem-content">
-      <div class="problem-tabs" role="tablist" aria-label="題目區段">
-        {#each problemSections as section}
-          <button type="button" class:selected={activeProblemSection === section.id} role="tab" aria-selected={activeProblemSection === section.id} onclick={() => activeProblemSection = section.id}>{section.label}</button>
-        {/each}
-      </div>
       <div class="problem-panel">
-        {#if activeProblemSection === "description"}
-          {@html problemHtml.description || "（Description 為空）"}
-        {:else if activeProblemSection === "input"}
-          {@html problemHtml.input || "（Input Format 為空）"}
-        {:else}
-          {@html problemHtml.output || "（Output Format 為空）"}
-        {/if}
+        {#each problemSections as section (section.id)}
+          <section class="problem-section" data-section={section.id}>
+            <h3 class="problem-section-title">{section.label}</h3>
+            <div class="problem-prose">
+              {#if problemHtml[section.id]}{@html problemHtml[section.id]}{:else}<p class="problem-empty">（此區段沒有內容）</p>{/if}
+            </div>
+          </section>
+        {/each}
       </div>
     </div>
   {/if}
