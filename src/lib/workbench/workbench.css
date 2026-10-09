@@ -122,8 +122,13 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .editor-status .clangd-status.ready { color: #4c7a55; }
 .editor-status .clangd-status.unavailable { color: #ae5c3e; }
 .editor-tools { display: flex; align-items: center; gap: 6px; }
-.editor-split-toggle { height: 24px; padding: 0 8px; border: 1px solid #dce2da; border-radius: 4px; color: #4b5d50; background: #fff; font-size: 9px; font-weight: 700; cursor: pointer; }
-.editor-split-toggle:hover { background: #eef3ec; }
+.editor-split-toggle { display: inline-flex; height: 25px; flex: 0 0 auto; align-items: center; gap: 5px; padding: 0 6px; border: 1px solid #cfdccc; border-radius: 4px; color: #355b3e; background: #edf4eb; font-size: 10px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+.editor-split-toggle:hover:not(:disabled) { border-color: #aec4aa; background: #e3eee0; }
+.editor-split-toggle:focus-visible { outline: 2px solid #6f8f73; outline-offset: 2px; }
+.editor-split-toggle > svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.editor-pane-count { padding: 2px 4px; border: 1px solid #d4e0d1; border-radius: 3px; color: #657a67; background: #f9fbf8; font-size: 9px; font-variant-numeric: tabular-nums; line-height: 1; }
+.editor-split-toggle:disabled { border-color: #e1e5df; color: #909890; background: #f1f3f0; cursor: not-allowed; }
+.editor-split-toggle:disabled .editor-pane-count { border-color: #e3e6e1; color: #9ba19a; background: #f7f8f6; }
 .editor-pane { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .editor-pane-header { display: flex; min-height: 28px; flex: 0 0 28px; align-items: center; justify-content: space-between; padding: 0 8px; border-bottom: 1px solid #e5e9e3; color: #758576; background: #f4f7f2; font-size: 9px; font-weight: 700; }
 .editor-pane-header .mini-icon { width: 22px; height: 22px; }
@@ -352,5 +357,3 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .editor-wrap.dragging .editor-host { pointer-events: none; }
 .editor-pane:not(.active) .editor-tabbar { background: #f1f4ef; }
 .editor-tab.shown { border-bottom-color: #b8c8b9; color: #5b6c60; }
-.editor-split-toggle:disabled { opacity: .45; cursor: not-allowed; }
-.editor-split-toggle:disabled:hover { background: #fff; }

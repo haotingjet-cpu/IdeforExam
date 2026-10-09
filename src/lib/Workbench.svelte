@@ -1003,15 +1003,15 @@
     <div class="file-actions">
       <button class="text-action" onclick={() => enterMode("newProject")}><FolderPlus size={15} />建立專案</button>
       <button class="text-action" onclick={openProject}><FolderOpen size={15} />開啟專案</button>
-      <button class="text-action" onclick={openProblemViewer}><FileCode2 size={15} />題目</button>
       <span class="action-divider"></span>
       <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
       <button class="text-action" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
       <button class="text-action" onclick={saveCurrent} disabled={!hasFile}><Save size={15} />儲存檔案</button>
+      <span class="action-divider"></span>
+      <button class="text-action" onclick={openProblemViewer}><FileCode2 size={15} />題目</button>
     </div>
     <div class="run-actions">
       <label class="timeout-field" title="程式逾時上限"><Clock3 size={14} /><input type="number" min="100" max="300000" step="100" bind:value={timeoutMs} aria-label="執行逾時毫秒" /><span>ms</span></label>
-      <button type="button" class="console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={15} />終端機</button>
       <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady || !hasFile}><Settings2 size={15} />編譯</button>
       <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady || !hasFile}><Play size={15} fill="currentColor" />執行</button>
       <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady || !hasFile}><CircleCheck size={15} />全部測試</button>
@@ -1056,8 +1056,8 @@
               </div>
               {#if index === editorPanes.length - 1}
                 <div class="editor-tools">
-                  <button type="button" class="editor-split-toggle" disabled={editorPanes.length >= maxEditorPanes} title={editorPanes.length >= maxEditorPanes ? `編輯區塊已達上限 (${maxEditorPanes})` : "新增編輯區塊 (Ctrl+\\)"} onclick={addEditorPane}><CirclePlus size={13} />新增編輯區塊 {editorPanes.length}/{maxEditorPanes}</button>
-                  <div class="editor-shortcut"><Search size={13} /><span>Ctrl F 搜尋</span></div>
+                  <button type="button" class="editor-split-toggle" disabled={editorPanes.length >= maxEditorPanes} title={editorPanes.length >= maxEditorPanes ? `編輯區塊已達上限 (${maxEditorPanes})` : "新增編輯區塊 (Ctrl+\\)"} onclick={addEditorPane}><CirclePlus size={14} /><span>新增編輯區</span><span class="editor-pane-count">{editorPanes.length}/{maxEditorPanes}</span></button>
+                  <div class="editor-shortcut"><Search size={12} /><span>Ctrl F</span></div>
                 </div>
               {/if}
             </div>
@@ -1124,7 +1124,7 @@
           <div><div class="output-label">EXPECTED</div><pre class="numbered" style={gutterStyle(expectedLines.length)}>{#each expectedLines as line, i}<span class="ln" data-n={i + 1}>{line}</span>{/each}</pre></div>
           {@render colSplitter(1)}
           <div>
-            <div class="output-label actual-label">ACTUAL{#if diff && showDiffMarks && diff.hasDiff}<span class="diff-count">{diff.diffCount} 行有差異</span>{/if}{#if diff}<button type="button" class="diff-toggle" class:on={showDiffMarks} aria-pressed={showDiffMarks} title="切換原始輸出／差異標示" onclick={() => showDiffMarks = !showDiffMarks}>{showDiffMarks ? "Show Changes：On" : "Show Changes：Off"}</button>{/if}</div>
+            <div class="output-label actual-label">ACTUAL{#if diff && showDiffMarks && diff.hasDiff}<span class="diff-count">{diff.diffCount} 行有差異</span>{/if}{#if diff}<button type="button" class="diff-toggle" class:on={showDiffMarks} aria-pressed={showDiffMarks} title="切換原始輸出／差異標示" onclick={() => showDiffMarks = !showDiffMarks}>{showDiffMarks ? "Show Difference：On" : "Show Difference：Off"}</button>{/if}</div>
             {#if diff && showDiffMarks}<pre class="numbered" style={gutterStyle(diff.lineCount)}>{#each diff.rows as row}<span class="ln" data-n={row.line ?? ""}>{#if row.kind === "missing"}<span class="diff-ghost">{row.segments[0].text || " "}</span>{:else}{#each row.segments as seg}{#if seg.missing}<span class="diff-missing" title={"缺少：" + seg.missing}></span>{:else if seg.bad}<span class="diff-bad">{seg.text}</span>{:else}{seg.text}{/if}{/each}{/if}</span>{/each}</pre>
             {:else if diff}<pre class="numbered" style={gutterStyle(actualLines.length)}>{#each actualLines as line, i}<span class="ln" data-n={i + 1}>{line}</span>{/each}</pre>
             {:else}<pre>尚未執行此測資</pre>{/if}
