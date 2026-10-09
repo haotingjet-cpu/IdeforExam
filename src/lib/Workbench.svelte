@@ -120,6 +120,7 @@
   ];
   let sidebarWidth = $state(205);
   let fileSidebarOpen = $state(true);
+  let localJudgeOpen = $state(true);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
   let consoleOpen = $state(false);
@@ -165,6 +166,7 @@
       const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
       if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
       if (typeof layout.fileSidebarOpen === "boolean") fileSidebarOpen = layout.fileSidebarOpen;
+      if (typeof layout.localJudgeOpen === "boolean") localJudgeOpen = layout.localJudgeOpen;
       if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
       if (typeof layout.consoleOpen === "boolean") consoleOpen = layout.consoleOpen;
       if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
@@ -530,9 +532,13 @@
     fileSidebarOpen = !fileSidebarOpen;
     saveLayout();
   }
+  function toggleLocalJudge() {
+    localJudgeOpen = !localJudgeOpen;
+    saveLayout();
+  }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, fileSidebarOpen, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, fileSidebarOpen, localJudgeOpen, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
     } catch { /* Keep resizing available when local storage is unavailable. */ }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
@@ -842,6 +848,11 @@
       if (!event.repeat) toggleFileSidebar();
       return;
     }
+    if (key === "j" && event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) toggleLocalJudge();
+      return;
+    }
     if (key === "s") {
       event.preventDefault();
       if (busy !== "" || event.repeat) return;
@@ -1038,6 +1049,7 @@
     class:resizing={activeResize !== null}
     class:console-hidden={!consoleOpen}
     class:sidebar-hidden={!fileSidebarOpen}
+    class:judge-hidden={!localJudgeOpen}
     bind:this={workbenchElement}
     style={`--sidebar-width:${sidebarWidth}px;--sidebar-height:${sidebarHeight}px;--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px`}
   >
@@ -1100,7 +1112,7 @@
         {/if}
       </div>
     </section>
-    <aside class="case-sidebar">
+    <aside id="local-judge" class="case-sidebar">
       <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="case-editor-button" title="開啟測資編輯器" aria-label="開啟測資編輯器" onclick={openTestManager}><Pencil size={13} />編輯測資</button></div>
       {#if testCases.length}
         <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
@@ -1165,8 +1177,9 @@
     {/if}
 
     <span class="status-right">
-      <button type="button" class="status-console-toggle" class:active={fileSidebarOpen} aria-pressed={fileSidebarOpen} aria-controls="file-sidebar" title="顯示／隱藏檔案側欄" onclick={toggleFileSidebar}><FolderOpen size={12} /></button>
-      <button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} /></button>
+      <button type="button" class="status-console-toggle" class:active={fileSidebarOpen} aria-pressed={fileSidebarOpen} aria-controls="file-sidebar" title="檔案側欄 (Ctrl+Shift+E)" onclick={toggleFileSidebar}><FolderOpen size={12} /></button>
+      <button type="button" class="status-console-toggle" class:active={localJudgeOpen} aria-pressed={localJudgeOpen} aria-controls="local-judge" title="Local Judge (Ctrl+Shift+J)" onclick={toggleLocalJudge}><CircleCheck size={12} /></button>
+      <button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} /></button>
       <span>競程工作台 <b>0.1.0</b></span>
     </span>
   </footer>

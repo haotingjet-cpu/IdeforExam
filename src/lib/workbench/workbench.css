@@ -39,6 +39,9 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .workbench { display: grid; min-height: 0; flex: 1; grid-template-columns: var(--sidebar-width) 6px minmax(300px, 1fr) 6px var(--test-width); grid-template-rows: minmax(240px, 1fr) 6px var(--console-height); overflow: hidden; border-radius: 3px; box-shadow: 0 5px 18px #2033270b; }
 .workbench.sidebar-hidden { grid-template-columns: 0 0 minmax(300px, 1fr) 6px var(--test-width); }
 .workbench.sidebar-hidden .sidebar, .workbench.sidebar-hidden .splitter-sidebar { display: none; }
+.workbench.judge-hidden { grid-template-columns: var(--sidebar-width) 6px minmax(300px, 1fr) 0 0; }
+.workbench.sidebar-hidden.judge-hidden { grid-template-columns: 0 0 minmax(300px, 1fr) 0 0; }
+.workbench.judge-hidden .case-sidebar, .workbench.judge-hidden .splitter-main { display: none; }
 .workbench.console-hidden { grid-template-rows: minmax(240px, 1fr) 0 0; }
 .workbench.console-hidden .console-panel, .workbench.console-hidden .splitter-console { display: none; }
 .sidebar { display: flex; min-height: 0; flex-direction: column; grid-column: 1; grid-row: 1 / 4; border-right: 1px solid #e1e6df; background: #f8faf6; }
@@ -244,6 +247,10 @@ button:disabled { opacity: .48; cursor: not-allowed; }
   .actionbar { flex-wrap: wrap; flex: 0 0 auto; gap: 3px 10px; padding: 3px 16px; }
   .workbench { grid-template-columns: var(--sidebar-width) 6px minmax(280px, 1fr); grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(180px, var(--test-height)) 6px minmax(150px, var(--console-height)); }
   .workbench.sidebar-hidden { grid-template-columns: 0 0 minmax(280px, 1fr); }
+  .workbench.judge-hidden { grid-template-rows: minmax(240px, var(--editor-height)) 6px minmax(150px, var(--console-height)); }
+  .workbench.judge-hidden .splitter-console { grid-row: 2; }
+  .workbench.judge-hidden .console-panel { grid-row: 3; }
+  .workbench.judge-hidden.console-hidden { grid-template-rows: minmax(240px, 1fr); }
   .workbench.console-hidden { grid-template-rows: minmax(240px, 1fr) 6px minmax(180px, var(--test-height)) 0 0; }
   .sidebar { grid-column: 1; grid-row: 1 / 6; }
   .editor-panel { grid-column: 3; grid-row: 1; }
@@ -273,6 +280,14 @@ button:disabled { opacity: .48; cursor: not-allowed; }
   .compile-button, .run-button, .test-button, .stop-button { gap: 4px; padding: 0 7px; font-size: 10px; }
   .workbench { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); overflow: visible; }
   .workbench.sidebar-hidden { grid-template-rows: minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 6px minmax(180px, var(--console-height)); }
+  .workbench.judge-hidden { grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(180px, var(--console-height)); }
+  .workbench.judge-hidden .splitter-console { grid-row: 4; }
+  .workbench.judge-hidden .console-panel { grid-row: 5; }
+  .workbench.judge-hidden.console-hidden { grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)); }
+  .workbench.sidebar-hidden.judge-hidden { grid-template-rows: minmax(280px, var(--editor-height)) 6px minmax(180px, var(--console-height)); }
+  .workbench.sidebar-hidden.judge-hidden .splitter-console { grid-row: 2; }
+  .workbench.sidebar-hidden.judge-hidden .console-panel { grid-row: 3; }
+  .workbench.sidebar-hidden.judge-hidden.console-hidden { grid-template-rows: minmax(280px, var(--editor-height)); }
   .workbench.console-hidden { grid-template-rows: minmax(100px, var(--sidebar-height)) 6px minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 0 0; }
   .workbench.sidebar-hidden.console-hidden { grid-template-rows: minmax(280px, var(--editor-height)) 6px minmax(240px, var(--test-height)) 0 0; }
   .sidebar { min-height: 0; max-height: none; grid-column: 1; grid-row: 1; border-right: 0; border-bottom: 1px solid #e1e6df; }
