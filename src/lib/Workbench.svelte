@@ -1062,10 +1062,13 @@
               {/if}
             </div>
             <div class="editor-host" bind:this={editorHosts[pane.id]}></div>
-            {#if !editorPaths.get(pane.id)}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+            {#if editorPanes.some((item) => item.tabs.length > 0) && !editorPaths.get(pane.id)}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
           </div>
           {#if index < editorPanes.length - 1}
-            <button type="button" class="editor-divider" aria-label="調整編輯器寬度" title="拖曳調整寬度，雙擊還原" onpointerdown={(event) => startSplitDrag(event, index)} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={resetPaneWeights} onkeydown={(event) => splitDividerKey(event, index)}></button>
+            {@const leftPane = editorPanes[index]}
+            {@const rightPane = editorPanes[index + 1]}
+            {@const leftPercent = Math.round((leftPane.weight / (leftPane.weight + rightPane.weight)) * 100)}
+            <button type="button" class="splitter editor-divider" role="slider" aria-orientation="vertical" aria-valuemin="15" aria-valuemax="85" aria-valuenow={leftPercent} aria-valuetext={`左側編輯區 ${leftPercent}%`} aria-label="調整相鄰編輯區寬度" title="拖曳調整寬度，雙擊還原" onpointerdown={(event) => startSplitDrag(event, index)} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={resetPaneWeights} onkeydown={(event) => splitDividerKey(event, index)}><span></span></button>
           {/if}
         {/each}
         {#if editorPanes.every((pane) => pane.tabs.length === 0)}
