@@ -1,0 +1,8 @@
+node_modules/
+build/
+.svelte-kit/
+src-tauri/target/
+mingw64/
+clangd_22.1.6/
+cpp_file/
+bun.lock
