@@ -23,7 +23,7 @@
   import { buildDiff, gutterStyle, numberedLines } from "./workbench/diff";
   import { TauriLspTransport } from "./workbench/lsp-transport";
   import { createSearchPanel } from "./workbench/search-panel";
-  import { autoExpandBrace, editableExtensions } from "./workbench/editor-extensions";
+  import { autoCloseParenthesis, autoExpandBrace, editableExtensions } from "./workbench/editor-extensions";
   import { editorTheme } from "./workbench/editor-theme";
   import { renderProblemMarkdown } from "./workbench/markdown";
 
@@ -79,7 +79,7 @@
   let stderr = $state("");
   let consoleTab = $state<ConsoleTab>("output");
   let showDiffMarks = $state(false);
-  let notice = $state("準備就緒");
+  let notice = $state("");
   let noticeTone = $state("neutral");
   // 介面模式（簡易狀態機）：同一時間只會處於其中一個模式。
   // 擴充方式：在 UiMode 加入新名稱，再視需要在 uiModeHooks 補上進入 / 離開該模式時要做的事。
@@ -119,6 +119,7 @@
     { id: "output", label: "Output Format" }
   ];
   let sidebarWidth = $state(205);
+  let fileSidebarOpen = $state(true);
   let testWidth = $state(280);
   let consoleHeight = $state(190);
   let consoleOpen = $state(false);
@@ -163,6 +164,7 @@
     try {
       const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
       if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
+      if (typeof layout.fileSidebarOpen === "boolean") fileSidebarOpen = layout.fileSidebarOpen;
       if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
       if (typeof layout.consoleOpen === "boolean") consoleOpen = layout.consoleOpen;
       if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
@@ -219,6 +221,7 @@
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         indentUnit.of("    "),
+        EditorView.inputHandler.of(autoCloseParenthesis),
         EditorView.inputHandler.of(autoExpandBrace),
         EditorState.tabSize.of(4),
         lspCompartment.of([]),
@@ -523,9 +526,13 @@
     saveLayout();
   }
   function toggleConsole() { setConsoleOpen(!consoleOpen); }
+  function toggleFileSidebar() {
+    fileSidebarOpen = !fileSidebarOpen;
+    saveLayout();
+  }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
+      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, fileSidebarOpen, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
     } catch { /* Keep resizing available when local storage is unavailable. */ }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
@@ -830,6 +837,11 @@
     if (!mod || event.altKey) return;
     const key = event.key.toLowerCase();
 
+    if (key === "e" && event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) toggleFileSidebar();
+      return;
+    }
     if (key === "s") {
       event.preventDefault();
       if (busy !== "" || event.repeat) return;
@@ -1001,13 +1013,16 @@
   </div>
   <div class="actionbar" data-tauri-drag-region>
     <div class="file-actions">
+      <!-- 專案控制區 -->
       <button class="text-action" onclick={() => enterMode("newProject")}><FolderPlus size={15} />建立專案</button>
       <button class="text-action" onclick={openProject}><FolderOpen size={15} />開啟專案</button>
       <span class="action-divider"></span>
+      <!-- 單一檔案控制區 -->
       <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
       <button class="text-action" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
       <button class="text-action" onclick={saveCurrent} disabled={!hasFile}><Save size={15} />儲存檔案</button>
       <span class="action-divider"></span>
+      <!-- 額外功能控制區 -->
       <button class="text-action" onclick={openProblemViewer}><FileCode2 size={15} />題目</button>
     </div>
     <div class="run-actions">
@@ -1022,10 +1037,11 @@
     class="workbench"
     class:resizing={activeResize !== null}
     class:console-hidden={!consoleOpen}
+    class:sidebar-hidden={!fileSidebarOpen}
     bind:this={workbenchElement}
     style={`--sidebar-width:${sidebarWidth}px;--sidebar-height:${sidebarHeight}px;--test-width:${testWidth}px;--console-height:${consoleHeight}px;--editor-height:${editorHeight}px;--test-height:${testHeight}px`}
   >
-    <aside class="sidebar">
+    <aside id="file-sidebar" class="sidebar">
       <section class="side-section files-section">
         <div class="section-heading"><span>專案檔案 <small>{filePaths.length}</small></span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
         {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)} title={`開啟於 ${paneName(activeEditorId)}`}
@@ -1138,7 +1154,22 @@
     <button type="button" class="splitter splitter-main" role="slider" aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"} aria-valuemin={viewportMode === "desktop" ? 235 : 240} aria-valuemax={viewportMode === "desktop" ? 480 : 560} aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight} aria-label="調整編輯器與測資比例" title="拖曳調整編輯器與測資比例" onpointerdown={(event) => startResize(event, "main")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "main")}><span></span></button>
     <button type="button" class="splitter splitter-console" role="slider" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="420" aria-valuenow={consoleHeight} aria-label="調整輸出面板高度" title="拖曳調整輸出面板高度" onpointerdown={(event) => startResize(event, "console")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "console")}><span></span></button>
   </main>
-  <footer class="statusbar"><span class="status-project"><span class="compiler-dot"></span>{projectPath || "本機工作區"}</span><span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span>{#if !consoleOpen}<span class="status-notice" class:error={noticeTone === "error"} class:success={noticeTone === "success"} title={notice}>{notice}</span>{/if}<span class="status-right"><button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} />終端機</button><span>競程工作台 <b>0.1.0</b></span></span></footer>
+  <footer class="statusbar">
+    <span class="status-project">
+      <span class="compiler-dot"></span>
+      {projectPath || "本機工作區"}
+    </span>
+    <span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span>
+    {#if !consoleOpen}
+      <span class="status-notice" class:error={noticeTone === "error"} class:success={noticeTone === "success"} title={notice}>{notice}</span>
+    {/if}
+
+    <span class="status-right">
+      <button type="button" class="status-console-toggle" class:active={fileSidebarOpen} aria-pressed={fileSidebarOpen} aria-controls="file-sidebar" title="顯示／隱藏檔案側欄" onclick={toggleFileSidebar}><FolderOpen size={12} /></button>
+      <button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="顯示／隱藏終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} /></button>
+      <span>競程工作台 <b>0.1.0</b></span>
+    </span>
+  </footer>
 </div>
 
 {#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
