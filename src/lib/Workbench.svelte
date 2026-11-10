@@ -6,41 +6,114 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { Compartment, EditorState } from "@codemirror/state";
-  import { EditorView, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
-  import { bracketMatching, defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
-  import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+  import {
+    EditorView,
+    highlightActiveLineGutter,
+    keymap,
+    lineNumbers,
+  } from "@codemirror/view";
+  import {
+    bracketMatching,
+    defaultHighlightStyle,
+    indentOnInput,
+    indentUnit,
+    syntaxHighlighting,
+  } from "@codemirror/language";
+  import {
+    defaultKeymap,
+    history,
+    historyKeymap,
+    indentWithTab,
+  } from "@codemirror/commands";
   import { cpp } from "@codemirror/lang-cpp";
-  import { closeSearchPanel, getSearchQuery, search, searchKeymap, setSearchQuery } from "@codemirror/search";
+  import {
+    closeSearchPanel,
+    getSearchQuery,
+    search,
+    searchKeymap,
+    setSearchQuery,
+  } from "@codemirror/search";
   import localforage from "localforage";
   import "katex/dist/katex.min.css";
-  import { LanguageServerClient, languageServerWithTransport } from "codemirror-languageserver";
-  import { CircleCheck, CirclePlus, CircleX, Clock3, Code2, Copy, FileCode2, FolderOpen, FolderPlus, Minus, Pencil, Play, Save, Search, Settings2, Square, Terminal, Trash2, X } from "lucide-svelte";
+  import {
+    LanguageServerClient,
+    languageServerWithTransport,
+  } from "codemirror-languageserver";
+  import {
+    CircleCheck,
+    CirclePlus,
+    CircleX,
+    Clock3,
+    Code2,
+    Copy,
+    FileCode2,
+    FolderOpen,
+    FolderPlus,
+    Minus,
+    Pencil,
+    Play,
+    Save,
+    Search,
+    Settings2,
+    Square,
+    Terminal,
+    Trash2,
+    X,
+  } from "lucide-svelte";
 
   import "./workbench/workbench.css";
-  import type { CompareResult, CompileResult, ConsoleTab, EditorTab, LspSessionInfo, ResizeKind, ResultStatus, RunResult, TestCase, ToolchainInfo, TiojProblem } from "./workbench/types";
-  import { layoutStorageKey, starterCode, storageKey } from "./workbench/constants";
+  import type {
+    CompareResult,
+    CompileResult,
+    ConsoleTab,
+    EditorTab,
+    LspSessionInfo,
+    ResizeKind,
+    ResultStatus,
+    RunResult,
+    TestCase,
+    ToolchainInfo,
+    TiojProblem,
+  } from "./workbench/types";
+  import {
+    layoutStorageKey,
+    starterCode,
+    storageKey,
+  } from "./workbench/constants";
   import { clamp, joinPath } from "./workbench/utils";
   import { buildDiff, gutterStyle, numberedLines } from "./workbench/diff";
   import { TauriLspTransport } from "./workbench/lsp-transport";
   import { createSearchPanel } from "./workbench/search-panel";
-  import { autoCloseParenthesis, autoExpandBrace, editableExtensions } from "./workbench/editor-extensions";
+  import {
+    autoCloseParenthesis,
+    autoExpandBrace,
+    editableExtensions,
+  } from "./workbench/editor-extensions";
   import { editorTheme } from "./workbench/editor-theme";
   import { renderProblemMarkdown } from "./workbench/markdown";
-
 
   let editorPanelElement: HTMLElement;
   let workbenchElement: HTMLElement;
   let editorView: EditorView | undefined;
   // 編輯區塊：每個區塊有自己的分頁列表與一個 EditorView，全部放在 editorPanes 這個 list。
   // 區塊是否存在完全由分頁列表決定：分頁清空就移除（至少保留一個），數量上限為 maxEditorPanes。
-  type EditorPane = { id: string; name: string; tabs: EditorTab[]; weight: number };
+  type EditorPane = {
+    id: string;
+    name: string;
+    tabs: EditorTab[];
+    weight: number;
+  };
   const maxEditorPanes = 3;
   const dividerWidth = 6;
   const minPanePx = 200;
   let paneSeq = 0;
   let editorPanes = $state<EditorPane[]>([]);
   let activeEditorId = $state("");
-  let paneColumns = $derived(editorPanes.map((pane) => `minmax(0,${pane.weight}fr)`).join(` ${dividerWidth}px `));
+  let paneColumns = $derived(
+    editorPanes
+      .map((pane) => `minmax(0,${pane.weight}fr)`)
+      .join(` ${dividerWidth}px `),
+  );
   let editorWrapElement = $state<HTMLElement | undefined>();
   let splitDrag = $state<{ pointerId: number; index: number } | null>(null);
   const editorViews = new Map<string, EditorView>();
@@ -66,9 +139,13 @@
   let hasFile = $derived(activePath !== "");
   const tabStates = new Map<string, EditorState>();
   const tabScroll = new Map<string, number>();
-  let testCases = $state<TestCase[]>([{ id: "sample", name: "", input: "5\n", expectedOutput: "5\n" }]);
+  let testCases = $state<TestCase[]>([
+    { id: "sample", name: "", input: "5\n", expectedOutput: "5\n" },
+  ]);
   let activeTestId = $state("sample");
-  let activeTest = $derived(testCases.find((testCase) => testCase.id === activeTestId));
+  let activeTest = $derived(
+    testCases.find((testCase) => testCase.id === activeTestId),
+  );
 
   let timeoutMs = $state(2000);
   let busy = $state("");
@@ -84,9 +161,15 @@
   // 介面模式（簡易狀態機）：同一時間只會處於其中一個模式。
   // 擴充方式：在 UiMode 加入新名稱，再視需要在 uiModeHooks 補上進入 / 離開該模式時要做的事。
   type UiMode = "code" | "tests" | "newProject" | "problems";
-  const uiModeHooks: Partial<Record<UiMode, { enter?: () => void; leave?: () => void }>> = {
+  const uiModeHooks: Partial<
+    Record<UiMode, { enter?: () => void; leave?: () => void }>
+  > = {
     // 離開「編輯程式」時收起 Ctrl+F 搜尋框（查詢內容仍保留，回來再按 Ctrl+F 即可）。
-    code: { leave: () => { if (editorView) closeSearchPanel(editorView); } }
+    code: {
+      leave: () => {
+        if (editorView) closeSearchPanel(editorView);
+      },
+    },
   };
   let uiMode = $state<UiMode>("code");
   let showNewProject = $derived(uiMode === "newProject");
@@ -102,21 +185,25 @@
   function exitMode(mode: UiMode) {
     if (uiMode === mode) enterMode("code");
   }
+  const problemUrlStorageKey = "ideforexam:last-problem-url";
   let projectName = $state("");
   let problemUrl = $state("");
   let problem = $state<TiojProblem | null>(null);
   let problemHtml = $state<Record<"description" | "input" | "output", string>>({
     description: "",
     input: "",
-    output: ""
+    output: "",
   });
   let problemStatus = $state("尚未讀取題目");
   let problemLoading = $state(false);
   let problemError = $state("");
-  let problemSections: Array<{ id: "description" | "input" | "output"; label: string }> = [
+  let problemSections: Array<{
+    id: "description" | "input" | "output";
+    label: string;
+  }> = [
     { id: "description", label: "Description" },
     { id: "input", label: "Input Format" },
-    { id: "output", label: "Output Format" }
+    { id: "output", label: "Output Format" },
   ];
   let sidebarWidth = $state(205);
   let fileSidebarOpen = $state(true);
@@ -127,7 +214,9 @@
   let editorHeight = $state(330);
   let testHeight = $state(210);
   let sidebarHeight = $state(130);
-  let activeResize = $state<{ kind: ResizeKind; pointerId: number } | null>(null);
+  let activeResize = $state<{ kind: ResizeKind; pointerId: number } | null>(
+    null,
+  );
   let diffCols = $state([1 / 3, 1 / 3, 1 / 3]);
   let diffResize = $state<{ index: number; pointerId: number } | null>(null);
   let diffColumnsElement = $state<HTMLElement | undefined>();
@@ -138,7 +227,12 @@
 
   onMount(() => {
     const updateViewportMode = () => {
-      viewportMode = window.innerWidth <= 740 ? "mobile" : window.innerWidth <= 980 ? "stacked" : "desktop";
+      viewportMode =
+        window.innerWidth <= 740
+          ? "mobile"
+          : window.innerWidth <= 980
+            ? "stacked"
+            : "desktop";
     };
     updateViewportMode();
     window.addEventListener("resize", updateViewportMode);
@@ -146,48 +240,97 @@
     let unlistenResize: UnlistenFn | undefined;
     try {
       appWindow = getCurrentWindow();
-      const syncMaximized = () => { void appWindow?.isMaximized().then((value) => { isMaximized = value; }).catch(() => {}); };
+      const syncMaximized = () => {
+        void appWindow
+          ?.isMaximized()
+          .then((value) => {
+            isMaximized = value;
+          })
+          .catch(() => {});
+      };
       syncMaximized();
-      void appWindow.onResized(syncMaximized).then((unlisten) => {
-        if (disposed) unlisten();
-        else unlistenResize = unlisten;
-      }).catch(() => {});
-    } catch { /* 非 Tauri 環境（例如純瀏覽器預覽）時不顯示視窗控制功能。 */ }
+      void appWindow
+        .onResized(syncMaximized)
+        .then((unlisten) => {
+          if (disposed) unlisten();
+          else unlistenResize = unlisten;
+        })
+        .catch(() => {});
+    } catch {
+      /* 非 Tauri 環境（例如純瀏覽器預覽）時不顯示視窗控制功能。 */
+    }
     toolchainInitialization = invoke<ToolchainInfo>("ensure_toolchains");
-    void toolchainInitialization.then((toolchains) => {
-      toolchainsReady = true;
-      toolchainStatus = toolchains.extracted ? "C++ 工具鏈已安裝" : "G++ · clangd 就緒";
-    }).catch((error) => {
-      toolchainStatus = `工具鏈準備失敗：${String(error)}`;
-      setNotice(toolchainStatus, "error");
-    });
+    void toolchainInitialization
+      .then((toolchains) => {
+        toolchainsReady = true;
+        toolchainStatus = toolchains.extracted
+          ? "C++ 工具鏈已安裝"
+          : "G++ · clangd 就緒";
+      })
+      .catch((error) => {
+        toolchainStatus = `工具鏈準備失敗：${String(error)}`;
+        setNotice(toolchainStatus, "error");
+      });
 
     try {
-      const layout = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "{}") as Record<string, unknown>;
-      if (typeof layout.sidebarWidth === "number") sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
-      if (typeof layout.fileSidebarOpen === "boolean") fileSidebarOpen = layout.fileSidebarOpen;
-      if (typeof layout.localJudgeOpen === "boolean") localJudgeOpen = layout.localJudgeOpen;
-      if (typeof layout.testWidth === "number") testWidth = clamp(layout.testWidth, 235, 480);
-      if (typeof layout.consoleOpen === "boolean") consoleOpen = layout.consoleOpen;
-      if (typeof layout.consoleHeight === "number") consoleHeight = clamp(layout.consoleHeight, 150, 420);
-      if (typeof layout.editorHeight === "number") editorHeight = clamp(layout.editorHeight, 240, 560);
-      if (typeof layout.testHeight === "number") testHeight = clamp(layout.testHeight, 180, 420);
-      if (typeof layout.sidebarHeight === "number") sidebarHeight = clamp(layout.sidebarHeight, 100, 240);
-      if (Array.isArray(layout.diffCols) && layout.diffCols.length === 3 && layout.diffCols.every((value) => typeof value === "number" && value >= minDiffCol && value <= 1)) {
-        const total = layout.diffCols.reduce((sum: number, value: number) => sum + value, 0);
+      const layout = JSON.parse(
+        localStorage.getItem(layoutStorageKey) ?? "{}",
+      ) as Record<string, unknown>;
+      if (typeof layout.sidebarWidth === "number")
+        sidebarWidth = clamp(layout.sidebarWidth, 155, 360);
+      if (typeof layout.fileSidebarOpen === "boolean")
+        fileSidebarOpen = layout.fileSidebarOpen;
+      if (typeof layout.localJudgeOpen === "boolean")
+        localJudgeOpen = layout.localJudgeOpen;
+      if (typeof layout.testWidth === "number")
+        testWidth = clamp(layout.testWidth, 235, 480);
+      if (typeof layout.consoleOpen === "boolean")
+        consoleOpen = layout.consoleOpen;
+      if (typeof layout.consoleHeight === "number")
+        consoleHeight = clamp(layout.consoleHeight, 150, 420);
+      if (typeof layout.editorHeight === "number")
+        editorHeight = clamp(layout.editorHeight, 240, 560);
+      if (typeof layout.testHeight === "number")
+        testHeight = clamp(layout.testHeight, 180, 420);
+      if (typeof layout.sidebarHeight === "number")
+        sidebarHeight = clamp(layout.sidebarHeight, 100, 240);
+      if (
+        Array.isArray(layout.diffCols) &&
+        layout.diffCols.length === 3 &&
+        layout.diffCols.every(
+          (value) =>
+            typeof value === "number" && value >= minDiffCol && value <= 1,
+        )
+      ) {
+        const total = layout.diffCols.reduce(
+          (sum: number, value: number) => sum + value,
+          0,
+        );
         diffCols = layout.diffCols.map((value: number) => value / total);
       }
     } catch {
       localStorage.removeItem(layoutStorageKey);
     }
 
+    try {
+      const cachedUrl = localStorage.getItem(problemUrlStorageKey);
+      if (typeof cachedUrl === "string" && cachedUrl.trim()) {
+        problemUrl = cachedUrl.trim();
+      }
+    } catch {
+      localStorage.removeItem(problemUrlStorageKey);
+    }
+
     const initialPane = createEditorPane();
     editorPanes = [initialPane];
     activeEditorId = initialPane.id;
     setActiveEditorPane(initialPane.id);
-    void tick().then(() => createEditorView(initialPane.id, editorHosts[initialPane.id]));
+    void tick().then(() =>
+      createEditorView(initialPane.id, editorHosts[initialPane.id]),
+    );
 
-    localforage.getItem<TestCase[]>(storageKey)
+    localforage
+      .getItem<TestCase[]>(storageKey)
       .then((parsed) => {
         if (parsed && Array.isArray(parsed) && parsed.length > 0) {
           testCases = parsed;
@@ -207,8 +350,12 @@
     };
   });
 
-  function minimizeWindow() { void appWindow?.minimize(); }
-  function toggleMaximizeWindow() { void appWindow?.toggleMaximize(); }
+  function minimizeWindow() {
+    void appWindow?.minimize();
+  }
+  function toggleMaximizeWindow() {
+    void appWindow?.toggleMaximize();
+  }
   function closeWindow() {
     if (!confirmDiscardChanges()) return;
     void appWindow?.close();
@@ -218,10 +365,20 @@
     return EditorState.create({
       doc,
       extensions: [
-        lineNumbers(), highlightActiveLineGutter(), history(), indentOnInput(), bracketMatching(), cpp(),
+        lineNumbers(),
+        highlightActiveLineGutter(),
+        history(),
+        indentOnInput(),
+        bracketMatching(),
+        cpp(),
         search({ top: true, createPanel: createSearchPanel }),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+        keymap.of([
+          ...defaultKeymap,
+          ...historyKeymap,
+          ...searchKeymap,
+          indentWithTab,
+        ]),
         indentUnit.of("    "),
         EditorView.inputHandler.of(autoCloseParenthesis),
         EditorView.inputHandler.of(autoExpandBrace),
@@ -231,22 +388,30 @@
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           // 以「發生變更的那個編輯器」對應的檔案標記未儲存，而不是 activePath（分割後兩邊都可能被編輯）。
-          for (const [side, view] of editorViews) if (view === update.view) setTabDirty(editorPaths.get(side) ?? "", true);
+          for (const [side, view] of editorViews)
+            if (view === update.view)
+              setTabDirty(editorPaths.get(side) ?? "", true);
         }),
         EditorView.lineWrapping,
-        editorTheme
-      ]
+        editorTheme,
+      ],
     });
   }
   // 整份換上另一個分頁的狀態；搜尋字串（Ctrl+F 的查詢）會跟著帶過去，面板則收起。
-  function swapEditorState(next: EditorState, scrollTop = 0, id: string = activeEditorId) {
+  function swapEditorState(
+    next: EditorState,
+    scrollTop = 0,
+    id: string = activeEditorId,
+  ) {
     const view = editorViews.get(id);
     if (!view) return;
     const query = getSearchQuery(view.state);
     view.setState(next);
     editorStates.set(id, next);
     if (query.search) view.dispatch({ effects: setSearchQuery.of(query) });
-    requestAnimationFrame(() => { view.scrollDOM.scrollTop = scrollTop; });
+    requestAnimationFrame(() => {
+      view.scrollDOM.scrollTop = scrollTop;
+    });
   }
   // 離開目前分頁前，把編輯器狀態存回 Map（先卸掉 LSP 外掛，回來時再由 connectLanguageServer 掛上）。
   function stashActiveTab(id: string = activeEditorId) {
@@ -263,18 +428,30 @@
     if (activeEditorId === id) activePath = "";
     const view = editorViews.get(id);
     if (view) swapEditorState(createEditorState("", false), 0, id);
-    if (activeEditorId === id && editorPanes.every((pane) => !editorPaths.get(pane.id))) closeLanguageServer();
+    if (
+      activeEditorId === id &&
+      editorPanes.every((pane) => !editorPaths.get(pane.id))
+    )
+      closeLanguageServer();
   }
   function setTabDirty(path: string, value: boolean) {
     const tab = findTab(path);
     if (tab && tab.dirty !== value) tab.dirty = value;
   }
   function createEditorPane(): EditorPane {
-    return { id: crypto.randomUUID(), name: `編輯器 ${++paneSeq}`, tabs: [], weight: 1 };
+    return {
+      id: crypto.randomUUID(),
+      name: `編輯器 ${++paneSeq}`,
+      tabs: [],
+      weight: 1,
+    };
   }
   function createEditorView(id: string, element?: HTMLDivElement) {
     if (!element || editorViews.has(id)) return;
-    const view = new EditorView({ state: createEditorState("", false), parent: element });
+    const view = new EditorView({
+      state: createEditorState("", false),
+      parent: element,
+    });
     editorViews.set(id, view);
     editorStates.set(id, view.state);
     editorPaths.set(id, "");
@@ -287,7 +464,9 @@
     activePath = editorPaths.get(id) ?? "";
     if (uiMode === "code") editorView?.focus();
   }
-  function resetPaneWeights() { for (const pane of editorPanes) pane.weight = 1; }
+  function resetPaneWeights() {
+    for (const pane of editorPanes) pane.weight = 1;
+  }
   // 第 index 條分隔線位於 editorPanes[index] 與 editorPanes[index + 1] 之間；拖曳只在這兩個區塊間重分配寬度。
   function startSplitDrag(event: PointerEvent, index: number) {
     if (event.button !== 0) return;
@@ -296,19 +475,29 @@
     splitDrag = { pointerId: event.pointerId, index };
   }
   function moveSplitDrag(event: PointerEvent) {
-    if (!splitDrag || splitDrag.pointerId !== event.pointerId || !editorWrapElement) return;
+    if (
+      !splitDrag ||
+      splitDrag.pointerId !== event.pointerId ||
+      !editorWrapElement
+    )
+      return;
     const { index } = splitDrag;
-    const left = editorPanes[index], right = editorPanes[index + 1];
+    const left = editorPanes[index],
+      right = editorPanes[index + 1];
     if (!left || !right) return;
     const rect = editorWrapElement.getBoundingClientRect();
     const available = rect.width - dividerWidth * (editorPanes.length - 1);
     if (available <= 0) return;
     const total = editorPanes.reduce((sum, pane) => sum + pane.weight, 0);
-    const before = editorPanes.slice(0, index).reduce((sum, pane) => sum + pane.weight, 0);
-    const leftEdge = rect.left + (before / total) * available + dividerWidth * index;
+    const before = editorPanes
+      .slice(0, index)
+      .reduce((sum, pane) => sum + pane.weight, 0);
+    const leftEdge =
+      rect.left + (before / total) * available + dividerWidth * index;
     const pair = left.weight + right.weight;
     const minWeight = Math.min(pair / 2, (minPanePx / available) * total);
-    const wanted = ((event.clientX - dividerWidth / 2 - leftEdge) / available) * total;
+    const wanted =
+      ((event.clientX - dividerWidth / 2 - leftEdge) / available) * total;
     const next = Math.min(pair - minWeight, Math.max(minWeight, wanted));
     left.weight = next;
     right.weight = pair - next;
@@ -318,12 +507,19 @@
     splitDrag = null;
   }
   function splitDividerKey(event: KeyboardEvent, index: number) {
-    const left = editorPanes[index], right = editorPanes[index + 1];
+    const left = editorPanes[index],
+      right = editorPanes[index + 1];
     if (!left || !right) return;
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
       const pair = left.weight + right.weight;
-      const next = Math.min(pair * 0.85, Math.max(pair * 0.15, left.weight + (event.key === "ArrowLeft" ? -0.05 : 0.05) * pair));
+      const next = Math.min(
+        pair * 0.85,
+        Math.max(
+          pair * 0.15,
+          left.weight + (event.key === "ArrowLeft" ? -0.05 : 0.05) * pair,
+        ),
+      );
       left.weight = next;
       right.weight = pair - next;
     } else if (event.key === "Home" || event.key === "Enter") {
@@ -332,7 +528,10 @@
     }
   }
   async function addEditorPane(): Promise<string | undefined> {
-    if (editorPanes.length >= maxEditorPanes) { setNotice(`編輯區塊最多 ${maxEditorPanes} 個`); return undefined; }
+    if (editorPanes.length >= maxEditorPanes) {
+      setNotice(`編輯區塊最多 ${maxEditorPanes} 個`);
+      return undefined;
+    }
     const pane = createEditorPane();
     editorPanes = [...editorPanes, pane];
     resetPaneWeights();
@@ -357,7 +556,10 @@
     const index = editorPanes.findIndex((pane) => pane.id === id);
     if (index < 0) return;
     const wasActive = activeEditorId === id;
-    for (const tab of editorPanes[index].tabs) { tabStates.delete(tab.path); tabScroll.delete(tab.path); }
+    for (const tab of editorPanes[index].tabs) {
+      tabStates.delete(tab.path);
+      tabScroll.delete(tab.path);
+    }
     destroyPaneView(id);
     editorPanes = editorPanes.filter((pane) => pane.id !== id);
     resetPaneWeights();
@@ -369,40 +571,82 @@
   // 右鍵檔案：開在「下一個」編輯區塊；只有一個區塊且未達上限時自動新增，已達上限則繞回第一個。
   async function openFileInNextPane(path: string) {
     const index = editorPanes.findIndex((pane) => pane.id === activeEditorId);
-    const target = editorPanes[index + 1]?.id ?? (editorPanes.length < maxEditorPanes ? await addEditorPane() : editorPanes[0]?.id);
+    const target =
+      editorPanes[index + 1]?.id ??
+      (editorPanes.length < maxEditorPanes
+        ? await addEditorPane()
+        : editorPanes[0]?.id);
     if (target) await openFile(path, target);
   }
-  function baseName(path: string) { return path.split(/[\\/]/).at(-1) ?? path; }
+  function baseName(path: string) {
+    return path.split(/[\\/]/).at(-1) ?? path;
+  }
   // Windows 路徑不分大小寫、斜線方向可能不同，比較時先正規化。
-  function normalizePath(path: string) { return path.replace(/\//g, "\\").toLowerCase(); }
-  function samePath(a: string, b: string) { return normalizePath(a) === normalizePath(b); }
-  function tabsFor(id: string) { return editorPanes.find((pane) => pane.id === id)?.tabs ?? []; }
-  function findTab(path: string) { return editorPanes.flatMap((pane) => pane.tabs).find((tab) => samePath(tab.path, path)); }
+  function normalizePath(path: string) {
+    return path.replace(/\//g, "\\").toLowerCase();
+  }
+  function samePath(a: string, b: string) {
+    return normalizePath(a) === normalizePath(b);
+  }
+  function tabsFor(id: string) {
+    return editorPanes.find((pane) => pane.id === id)?.tabs ?? [];
+  }
+  function findTab(path: string) {
+    return editorPanes
+      .flatMap((pane) => pane.tabs)
+      .find((tab) => samePath(tab.path, path));
+  }
   function isInsideProject(path: string) {
     if (!projectPath || path.length <= projectPath.length) return false;
-    return samePath(path.slice(0, projectPath.length), projectPath) && /[\\/]/.test(path[projectPath.length]);
+    return (
+      samePath(path.slice(0, projectPath.length), projectPath) &&
+      /[\\/]/.test(path[projectPath.length])
+    );
   }
   // 分頁標籤：預設只顯示檔名；有同名檔案同時開啟時加上上層資料夾以區分。
   function tabLabel(path: string) {
     const name = baseName(path);
-    const clash = editorPanes.flatMap((pane) => pane.tabs).some((tab) => tab.path !== path && baseName(tab.path).toLowerCase() === name.toLowerCase());
+    const clash = editorPanes
+      .flatMap((pane) => pane.tabs)
+      .some(
+        (tab) =>
+          tab.path !== path &&
+          baseName(tab.path).toLowerCase() === name.toLowerCase(),
+      );
     if (!clash) return name;
     const parts = path.split(/[\\/]/);
     return parts.length > 1 ? `${parts.at(-2)}/${name}` : name;
   }
-  function isPathDirty(path: string) { return findTab(path)?.dirty ?? false; }
+  function isPathDirty(path: string) {
+    return findTab(path)?.dirty ?? false;
+  }
   function tabContent(path: string) {
-    if (path === activePath && editorView) return editorView.state.doc.toString();
+    if (path === activePath && editorView)
+      return editorView.state.doc.toString();
     return tabStates.get(path)?.doc.toString() ?? "";
   }
-  function setNotice(message: string, tone = "neutral") { notice = message; noticeTone = tone; }
-  function openProblemViewer() {
-    problemError = "";
-    problemStatus = problem ? "題目已載入" : "尚未讀取題目";
-    enterMode("problems");
+  function setNotice(message: string, tone = "neutral") {
+    notice = message;
+    noticeTone = tone;
   }
-  async function loadProblem(event: SubmitEvent) {
-    event.preventDefault();
+  function openProblemViewer() {
+    try {
+      const cachedUrl = localStorage.getItem(problemUrlStorageKey);
+      if (cachedUrl && !problemUrl.trim()) problemUrl = cachedUrl.trim();
+    } catch {}
+    problemError = "";
+    enterMode("problems");
+
+    const url = problemUrl.trim();
+    if (!problemLoading && url && /^https?:\/\//i.test(url)) {
+      void loadProblem();
+      return;
+    }
+
+    problemStatus = problem ? "題目已載入" : "尚未讀取題目";
+  }
+  async function loadProblem(event?: SubmitEvent) {
+    event?.preventDefault();
     const url = problemUrl.trim();
     if (!/^https?:\/\//i.test(url)) {
       problemError = "請輸入有效的 TIOJ 題目網址。";
@@ -413,8 +657,14 @@
     problemError = "";
     problemStatus = "正在讀取題目...";
     try {
-      const result = await invoke<TiojProblem>("get_problem", { targetUrl: url });
+      const result = await invoke<TiojProblem>("get_problem", {
+        targetUrl: url,
+      });
       problem = result;
+      problemUrl = url;
+      try {
+        localStorage.setItem(problemUrlStorageKey, url);
+      } catch {}
       await renderProblemContent();
       problemStatus = "題目讀取完成";
       setNotice("題目已載入", "success");
@@ -429,19 +679,33 @@
     }
   }
   function clearProblemViewer() {
-    problemUrl = "";
     problem = null;
     problemHtml = { description: "", input: "", output: "" };
     problemError = "";
     problemStatus = "尚未讀取題目";
+    try {
+      const cachedUrl = localStorage.getItem(problemUrlStorageKey);
+      problemUrl = cachedUrl?.trim() ?? "";
+    } catch {
+      problemUrl = "";
+    }
     exitMode("problems");
   }
   async function renderProblemContent() {
     if (!problem) return;
     problemHtml = {
-      description: await renderProblemMarkdown(problem.description, problemUrl.trim()),
-      input: await renderProblemMarkdown(problem.inputFormat, problemUrl.trim()),
-      output: await renderProblemMarkdown(problem.outputFormat, problemUrl.trim())
+      description: await renderProblemMarkdown(
+        problem.description,
+        problemUrl.trim(),
+      ),
+      input: await renderProblemMarkdown(
+        problem.inputFormat,
+        problemUrl.trim(),
+      ),
+      output: await renderProblemMarkdown(
+        problem.outputFormat,
+        problemUrl.trim(),
+      ),
     };
   }
   // 切換分頁可能很快，連線動作排成佇列依序執行，避免同時啜動多個 clangd；已不是目前分頁的請求直接略過。
@@ -469,11 +733,21 @@
       closeLanguageServer();
       clangdStatus = "啟動 clangd...";
       try {
-        const session = await invoke<LspSessionInfo>("start_clangd", { workspacePath, documentPath: path });
+        const session = await invoke<LspSessionInfo>("start_clangd", {
+          workspacePath,
+          documentPath: path,
+        });
         const transport = new TauriLspTransport(session.sessionId);
-        const unlisten = await listen<string>(session.eventName, (event) => transport.receive(event.payload));
+        const unlisten = await listen<string>(session.eventName, (event) =>
+          transport.receive(event.payload),
+        );
         transport.setUnlisten(unlisten);
-        const workspaceFolders = [{ uri: session.rootUri, name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace" }];
+        const workspaceFolders = [
+          {
+            uri: session.rootUri,
+            name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace",
+          },
+        ];
         const client = new LanguageServerClient({
           transport,
           autoClose: false,
@@ -481,9 +755,16 @@
           workspaceFolders,
           documentUri: session.documentUri,
           languageId: "cpp",
-          onCapabilities: () => { clangdStatus = "clangd IntelliSense"; },
-          onError: (error) => { clangdStatus = `clangd: ${error.message}`; },
-          onClose: () => { if (lspSession?.sessionId === session.sessionId) clangdStatus = "clangd 已中斷"; }
+          onCapabilities: () => {
+            clangdStatus = "clangd IntelliSense";
+          },
+          onError: (error) => {
+            clangdStatus = `clangd: ${error.message}`;
+          },
+          onClose: () => {
+            if (lspSession?.sessionId === session.sessionId)
+              clangdStatus = "clangd 已中斷";
+          },
         });
         lspSession = session;
         lspSessionWorkspace = workspacePath;
@@ -498,17 +779,26 @@
     if (!lspSession || !languageClient || !lspTransport) return;
     const documentUri = await invoke<string>("file_uri", { path });
     if (activePath !== path) return;
-    const workspaceFolders = [{ uri: lspSession.rootUri, name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace" }];
+    const workspaceFolders = [
+      {
+        uri: lspSession.rootUri,
+        name: workspacePath.split(/[\\/]/).at(-1) ?? "workspace",
+      },
+    ];
     editorView?.dispatch({
-      effects: lspCompartment.reconfigure(languageServerWithTransport({
-        client: languageClient,
-        transport: lspTransport,
-        rootUri: lspSession.rootUri,
-        workspaceFolders,
-        documentUri,
-        languageId: "cpp",
-        onError: (error) => { clangdStatus = `clangd: ${error.message}`; }
-      }))
+      effects: lspCompartment.reconfigure(
+        languageServerWithTransport({
+          client: languageClient,
+          transport: lspTransport,
+          rootUri: lspSession.rootUri,
+          workspaceFolders,
+          documentUri,
+          languageId: "cpp",
+          onError: (error) => {
+            clangdStatus = `clangd: ${error.message}`;
+          },
+        }),
+      ),
     });
   }
   let lspSessionWorkspace = "";
@@ -527,7 +817,9 @@
     consoleOpen = open;
     saveLayout();
   }
-  function toggleConsole() { setConsoleOpen(!consoleOpen); }
+  function toggleConsole() {
+    setConsoleOpen(!consoleOpen);
+  }
   function toggleFileSidebar() {
     fileSidebarOpen = !fileSidebarOpen;
     saveLayout();
@@ -538,21 +830,39 @@
   }
   function saveLayout() {
     try {
-      localStorage.setItem(layoutStorageKey, JSON.stringify({ sidebarWidth, fileSidebarOpen, localJudgeOpen, testWidth, consoleHeight, consoleOpen, editorHeight, testHeight, sidebarHeight, diffCols: [...diffCols] }));
-    } catch { /* Keep resizing available when local storage is unavailable. */ }
+      localStorage.setItem(
+        layoutStorageKey,
+        JSON.stringify({
+          sidebarWidth,
+          fileSidebarOpen,
+          localJudgeOpen,
+          testWidth,
+          consoleHeight,
+          consoleOpen,
+          editorHeight,
+          testHeight,
+          sidebarHeight,
+          diffCols: [...diffCols],
+        }),
+      );
+    } catch {
+      /* Keep resizing available when local storage is unavailable. */
+    }
   }
   function startResize(event: PointerEvent, kind: ResizeKind) {
     if (event.button !== 0) return;
     activeResize = { kind, pointerId: event.pointerId };
     const target = event.currentTarget;
-    if (target instanceof HTMLElement) target.setPointerCapture(event.pointerId);
+    if (target instanceof HTMLElement)
+      target.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
   function moveResize(event: PointerEvent) {
     if (!activeResize || activeResize.pointerId !== event.pointerId) return;
     const bounds = workbenchElement.getBoundingClientRect();
     if (activeResize.kind === "sidebar") {
-      if (window.innerWidth <= 740) sidebarHeight = clamp(event.clientY - bounds.top, 100, 240);
+      if (window.innerWidth <= 740)
+        sidebarHeight = clamp(event.clientY - bounds.top, 100, 240);
       else sidebarWidth = clamp(event.clientX - bounds.left, 155, 360);
     } else if (activeResize.kind === "main") {
       if (window.innerWidth <= 980) {
@@ -574,7 +884,10 @@
   // 只移動相鄰兩欄的分界，兩欄寬度總和不變，第三欄不受影響
   function setDiffSplit(index: number, leftFraction: number) {
     const pair = diffCols[index] + diffCols[index + 1];
-    const left = Math.max(minDiffCol, Math.min(pair - minDiffCol, leftFraction));
+    const left = Math.max(
+      minDiffCol,
+      Math.min(pair - minDiffCol, leftFraction),
+    );
     const next = [...diffCols];
     next[index] = left;
     next[index + 1] = pair - left;
@@ -584,16 +897,26 @@
     if (event.button !== 0) return;
     diffResize = { index, pointerId: event.pointerId };
     const target = event.currentTarget;
-    if (target instanceof HTMLElement) target.setPointerCapture(event.pointerId);
+    if (target instanceof HTMLElement)
+      target.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
   function moveDiffResize(event: PointerEvent) {
-    if (!diffResize || diffResize.pointerId !== event.pointerId || !diffColumnsElement) return;
+    if (
+      !diffResize ||
+      diffResize.pointerId !== event.pointerId ||
+      !diffColumnsElement
+    )
+      return;
     const available = diffColumnsElement.clientWidth - 14;
     if (available <= 0) return;
     const leftColumn = diffColumnsElement.children[diffResize.index * 2];
     if (!(leftColumn instanceof HTMLElement)) return;
-    setDiffSplit(diffResize.index, (event.clientX - leftColumn.getBoundingClientRect().left - 3.5) / available);
+    setDiffSplit(
+      diffResize.index,
+      (event.clientX - leftColumn.getBoundingClientRect().left - 3.5) /
+        available,
+    );
   }
   function endDiffResize(event: PointerEvent) {
     if (!diffResize || diffResize.pointerId !== event.pointerId) return;
@@ -603,7 +926,8 @@
   function resizeDiffWithKeyboard(event: KeyboardEvent, index: number) {
     const step = event.shiftKey ? 0.06 : 0.02;
     if (event.key === "ArrowLeft") setDiffSplit(index, diffCols[index] - step);
-    else if (event.key === "ArrowRight") setDiffSplit(index, diffCols[index] + step);
+    else if (event.key === "ArrowRight")
+      setDiffSplit(index, diffCols[index] + step);
     else return;
     event.preventDefault();
     saveLayout();
@@ -616,56 +940,87 @@
     const step = event.shiftKey ? 32 : 12;
     if (kind === "sidebar") {
       if (window.innerWidth <= 740) {
-        if (event.key === "ArrowUp") sidebarHeight = clamp(sidebarHeight - step, 100, 240);
-        else if (event.key === "ArrowDown") sidebarHeight = clamp(sidebarHeight + step, 100, 240);
+        if (event.key === "ArrowUp")
+          sidebarHeight = clamp(sidebarHeight - step, 100, 240);
+        else if (event.key === "ArrowDown")
+          sidebarHeight = clamp(sidebarHeight + step, 100, 240);
         else return;
       } else {
-        if (event.key === "ArrowLeft") sidebarWidth = clamp(sidebarWidth - step, 155, 360);
-        else if (event.key === "ArrowRight") sidebarWidth = clamp(sidebarWidth + step, 155, 360);
+        if (event.key === "ArrowLeft")
+          sidebarWidth = clamp(sidebarWidth - step, 155, 360);
+        else if (event.key === "ArrowRight")
+          sidebarWidth = clamp(sidebarWidth + step, 155, 360);
         else return;
       }
     } else if (kind === "main") {
       if (window.innerWidth <= 980) {
-        if (event.key === "ArrowUp") editorHeight = clamp(editorHeight - step, 240, 560);
-        else if (event.key === "ArrowDown") editorHeight = clamp(editorHeight + step, 240, 560);
+        if (event.key === "ArrowUp")
+          editorHeight = clamp(editorHeight - step, 240, 560);
+        else if (event.key === "ArrowDown")
+          editorHeight = clamp(editorHeight + step, 240, 560);
         else return;
       } else {
-        if (event.key === "ArrowLeft") testWidth = clamp(testWidth + step, 235, 480);
-        else if (event.key === "ArrowRight") testWidth = clamp(testWidth - step, 235, 480);
+        if (event.key === "ArrowLeft")
+          testWidth = clamp(testWidth + step, 235, 480);
+        else if (event.key === "ArrowRight")
+          testWidth = clamp(testWidth - step, 235, 480);
         else return;
       }
     } else {
-      if (event.key === "ArrowUp") consoleHeight = clamp(consoleHeight + step, 150, 420);
-      else if (event.key === "ArrowDown") consoleHeight = clamp(consoleHeight - step, 150, 420);
+      if (event.key === "ArrowUp")
+        consoleHeight = clamp(consoleHeight + step, 150, 420);
+      else if (event.key === "ArrowDown")
+        consoleHeight = clamp(consoleHeight - step, 150, 420);
       else return;
     }
     event.preventDefault();
     saveLayout();
   }
   function confirmDiscardChanges() {
-    const unsaved = editorPanes.flatMap((pane) => pane.tabs).filter((tab) => tab.dirty);
+    const unsaved = editorPanes
+      .flatMap((pane) => pane.tabs)
+      .filter((tab) => tab.dirty);
     if (!unsaved.length) return true;
     const names = unsaved.map((tab) => tabLabel(tab.path)).join("、");
-    return window.confirm(unsaved.length === 1 ? `「${names}」有尚未儲存的變更，要捨棄嗎？` : `有 ${unsaved.length} 個檔案尚未儲存（${names}），要捨棄嗎？`);
+    return window.confirm(
+      unsaved.length === 1
+        ? `「${names}」有尚未儲存的變更，要捨棄嗎？`
+        : `有 ${unsaved.length} 個檔案尚未儲存（${names}），要捨棄嗎？`,
+    );
   }
   function relativeFile(path: string) {
-    return isInsideProject(path) ? path.slice(projectPath.length).replace(/^[\\/]/, "") : baseName(path);
+    return isInsideProject(path)
+      ? path.slice(projectPath.length).replace(/^[\\/]/, "")
+      : baseName(path);
   }
   async function refreshFiles(path = projectPath) {
-    if (path) filePaths = await invoke<string[]>("list_source_files", { projectPath: path });
+    if (path)
+      filePaths = await invoke<string[]>("list_source_files", {
+        projectPath: path,
+      });
   }
   // 開啟檔案：已開啟就切過去，否則讀檔後新增一個分頁。
   async function openFile(path: string, id: string = activeEditorId) {
     const pane = editorPanes.find((item) => item.id === id);
     if (!pane) return;
     const existing = findTab(path);
-    if (existing) { const owner = editorPanes.find((item) => item.tabs.some((tab) => samePath(tab.path, path))); if (owner) await activateTab(path, owner.id); return; }
+    if (existing) {
+      const owner = editorPanes.find((item) =>
+        item.tabs.some((tab) => samePath(tab.path, path)),
+      );
+      if (owner) await activateTab(path, owner.id);
+      return;
+    }
     try {
       const contents = await invoke<string>("read_source", { path });
       createEditorView(id, editorHosts[id]);
       stashActiveTab(id);
       tabStates.set(path, createEditorState(contents, true));
-      editorPanes = editorPanes.map((item) => item.id === id ? { ...item, tabs: [...item.tabs, { path, dirty: false }] } : item);
+      editorPanes = editorPanes.map((item) =>
+        item.id === id
+          ? { ...item, tabs: [...item.tabs, { path, dirty: false }] }
+          : item,
+      );
       editorPaths.set(id, path);
       activeEditorId = id;
       activePath = path;
@@ -674,7 +1029,9 @@
       if (uiMode === "code") editorView?.focus();
       setNotice(`已開啟 ${relativeFile(path)}`);
       await connectLanguageServer(path);
-    } catch (error) { setNotice(String(error), "error"); }
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
   async function activateTab(path: string, id: string = activeEditorId) {
     const state = tabStates.get(path);
@@ -697,21 +1054,34 @@
     const currentTabs = tabsFor(activeEditorId);
     if (currentTabs.length < 2) return;
     const index = currentTabs.findIndex((tab) => tab.path === activePath);
-    void activateTab(currentTabs[(index + direction + currentTabs.length) % currentTabs.length].path, activeEditorId);
+    void activateTab(
+      currentTabs[(index + direction + currentTabs.length) % currentTabs.length]
+        .path,
+      activeEditorId,
+    );
   }
   function closeTab(path: string, id: string = activeEditorId) {
     const pane = editorPanes.find((item) => item.id === id);
     const currentTabs = pane?.tabs ?? [];
     const index = currentTabs.findIndex((tab) => samePath(tab.path, path));
     if (index < 0) return;
-    if (currentTabs[index].dirty && !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)) return;
+    if (
+      currentTabs[index].dirty &&
+      !window.confirm(`「${tabLabel(path)}」有尚未儲存的變更，要捨棄嗎？`)
+    )
+      return;
     const nextTabs = currentTabs.filter((tab) => !samePath(tab.path, path));
     const wasShown = samePath(editorPaths.get(id) ?? "", path);
-    editorPanes = editorPanes.map((item) => item.id === id ? { ...item, tabs: nextTabs } : item);
+    editorPanes = editorPanes.map((item) =>
+      item.id === id ? { ...item, tabs: nextTabs } : item,
+    );
     tabStates.delete(path);
     tabScroll.delete(path);
     // 分頁列表空了就移除這個編輯區塊（最後一個區塊保留，顯示空白狀態）。
-    if (nextTabs.length === 0 && editorPanes.length > 1) { removeEditorPane(id); return; }
+    if (nextTabs.length === 0 && editorPanes.length > 1) {
+      removeEditorPane(id);
+      return;
+    }
     if (!wasShown) return;
     clearEditor(id);
     const next = nextTabs[Math.min(index, nextTabs.length - 1)];
@@ -745,7 +1115,11 @@
     const strip = tabStripElements[activeEditorId];
     void tabsFor(activeEditorId).length;
     if (!strip || !path) return;
-    void tick().then(() => strip?.querySelector<HTMLElement>(".editor-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    void tick().then(() =>
+      strip
+        ?.querySelector<HTMLElement>(".editor-tab.active")
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
+    );
   });
   async function openProject() {
     if (!confirmDiscardChanges()) return;
@@ -757,17 +1131,28 @@
       await refreshFiles(selected);
       if (filePaths.length) await openFile(filePaths[0]);
       else setNotice("專案已開啟，新增一個 C++ 檔案開始撰寫");
-    } catch (error) { setNotice(String(error), "error"); }
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
   async function openSourceFile() {
     try {
-      const selected = await open({ multiple: false, defaultPath: projectPath || undefined, filters: [{ name: "C++ 原始碼", extensions: ["cpp", "cc", "cxx", "h", "hpp"] }] });
+      const selected = await open({
+        multiple: false,
+        defaultPath: projectPath || undefined,
+        filters: [
+          { name: "C++ 原始碼", extensions: ["cpp", "cc", "cxx", "h", "hpp"] },
+        ],
+      });
       if (typeof selected !== "string") return;
       // 檔案已在目前專案內就保留專案資料夾；否則以該檔案所在資料夾作為專案。
-      if (!isInsideProject(selected)) projectPath = selected.replace(/[\\/][^\\/]+$/, "");
+      if (!isInsideProject(selected))
+        projectPath = selected.replace(/[\\/][^\\/]+$/, "");
       await openFile(selected);
       await refreshFiles();
-    } catch (error) { setNotice(String(error), "error"); }
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
   async function createProject(event: SubmitEvent) {
     event.preventDefault();
@@ -777,29 +1162,44 @@
       if (typeof parent !== "string") return;
       if (!confirmDiscardChanges()) return;
       closeAllTabs();
-      projectPath = await invoke<string>("create_project", { parentPath: parent, name: projectName.trim() });
+      projectPath = await invoke<string>("create_project", {
+        parentPath: parent,
+        name: projectName.trim(),
+      });
       projectName = "";
       exitMode("newProject");
       await refreshFiles();
       await openFile(joinPath(projectPath, "main.cpp"));
       setNotice("專案已建立", "success");
-    } catch (error) { setNotice(String(error), "error"); }
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
   async function newSourceFile() {
     try {
       const selected = await save({
         title: "新增 C++ 檔案",
-        defaultPath: projectPath ? joinPath(projectPath, "main.cpp") : "main.cpp",
-        filters: [{ name: "C++ 原始碼", extensions: ["cpp"] }]
+        defaultPath: projectPath
+          ? joinPath(projectPath, "main.cpp")
+          : "main.cpp",
+        filters: [{ name: "C++ 原始碼", extensions: ["cpp"] }],
       });
-      if (!selected) { setNotice("已取消新增檔案"); return; }
-      const path = /\.(cpp|cc|cxx|h|hpp)$/i.test(selected) ? selected : `${selected}.cpp`;
+      if (!selected) {
+        setNotice("已取消新增檔案");
+        return;
+      }
+      const path = /\.(cpp|cc|cxx|h|hpp)$/i.test(selected)
+        ? selected
+        : `${selected}.cpp`;
       await invoke("save_source", { path, content: starterCode });
-      if (!projectPath || !isInsideProject(path)) projectPath = path.replace(/[\\/][^\\/]+$/, "");
+      if (!projectPath || !isInsideProject(path))
+        projectPath = path.replace(/[\\/][^\\/]+$/, "");
       await refreshFiles();
       await openFile(path);
       setNotice(`已建立 ${relativeFile(path)}`, "success");
-    } catch (error) { setNotice(String(error), "error"); }
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
   // 寫入單一分頁；寫入期間若又有修改，維持「未儲存」狀態。
   async function writeTab(path: string) {
@@ -809,34 +1209,57 @@
   }
   async function saveCurrent(): Promise<boolean> {
     const path = activePath;
-    if (!path) { setNotice("請先新增或開啟檔案", "error"); return false; }
+    if (!path) {
+      setNotice("請先新增或開啟檔案", "error");
+      return false;
+    }
     try {
       await writeTab(path);
       await refreshFiles();
       await connectLanguageServer(path);
       setNotice("檔案已儲存", "success");
       return true;
-    } catch (error) { setNotice(String(error), "error"); return false; }
+    } catch (error) {
+      setNotice(String(error), "error");
+      return false;
+    }
   }
   async function saveOtherDirtyTabs(): Promise<boolean> {
-    for (const tab of editorPanes.flatMap((pane) => pane.tabs).filter((item) => item.dirty && item.path !== activePath)) {
-      try { await writeTab(tab.path); }
-      catch (error) { setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error"); return false; }
+    for (const tab of editorPanes
+      .flatMap((pane) => pane.tabs)
+      .filter((item) => item.dirty && item.path !== activePath)) {
+      try {
+        await writeTab(tab.path);
+      } catch (error) {
+        setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error");
+        return false;
+      }
     }
     return true;
   }
   async function saveAllTabs() {
-    const targets = editorPanes.flatMap((pane) => pane.tabs).filter((tab) => tab.dirty);
-    if (!targets.length) { setNotice("沒有需要儲存的檔案"); return; }
+    const targets = editorPanes
+      .flatMap((pane) => pane.tabs)
+      .filter((tab) => tab.dirty);
+    if (!targets.length) {
+      setNotice("沒有需要儲存的檔案");
+      return;
+    }
     for (const tab of targets) {
-      try { await writeTab(tab.path); }
-      catch (error) { setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error"); return; }
+      try {
+        await writeTab(tab.path);
+      } catch (error) {
+        setNotice(`${tabLabel(tab.path)} 儲存失敗：${String(error)}`, "error");
+        return;
+      }
     }
     await refreshFiles();
     setNotice(`已儲存 ${targets.length} 個檔案`, "success");
   }
   // 編譯前一併存下其他分頁（被 #include 的檔案必須是最新內容）。
-  async function saveForBuild() { return (await saveOtherDirtyTabs()) && (await saveCurrent()); }
+  async function saveForBuild() {
+    return (await saveOtherDirtyTabs()) && (await saveCurrent());
+  }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
     const mod = event.ctrlKey || event.metaKey;
@@ -873,14 +1296,24 @@
     } else if (event.code === "Backslash" && !event.shiftKey) {
       event.preventDefault();
       if (!event.repeat) void addEditorPane();
-    } else if (event.key === "Tab" || (!event.shiftKey && (event.key === "PageUp" || event.key === "PageDown"))) {
+    } else if (
+      event.key === "Tab" ||
+      (!event.shiftKey && (event.key === "PageUp" || event.key === "PageDown"))
+    ) {
       event.preventDefault();
-      cycleTab(event.key === "PageUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1);
+      cycleTab(
+        event.key === "PageUp" || (event.key === "Tab" && event.shiftKey)
+          ? -1
+          : 1,
+      );
     }
   }
   async function compileCurrent(): Promise<boolean> {
     const path = activePath;
-    if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return false; }
+    if (!toolchainsReady) {
+      setNotice(toolchainStatus, "error");
+      return false;
+    }
     if (!(await saveForBuild())) return false;
     busy = "compile";
     compilerOutput = "正在呼叫 G++...";
@@ -889,10 +1322,18 @@
     try {
       const result = await invoke<CompileResult>("compile_source", { path });
       compilerOutput = result.output || "Build Successful";
-      setNotice(result.success ? "Build Successful" : "Build Failed", result.success ? "success" : "error");
+      setNotice(
+        result.success ? "Build Successful" : "Build Failed",
+        result.success ? "success" : "error",
+      );
       return result.success;
-    } catch (error) { compilerOutput = String(error); setNotice(String(error), "error"); return false; }
-    finally { busy = ""; }
+    } catch (error) {
+      compilerOutput = String(error);
+      setNotice(String(error), "error");
+      return false;
+    } finally {
+      busy = "";
+    }
   }
   async function runProgram() {
     const path = activePath;
@@ -905,17 +1346,34 @@
     cancelRequested = false;
     try {
       await invoke("register_run", { runId });
-      const result = await invoke<RunResult>("run_source", { runId, path, input: activeTest?.input ?? "", timeoutMs });
+      const result = await invoke<RunResult>("run_source", {
+        runId,
+        path,
+        input: activeTest?.input ?? "",
+        timeoutMs,
+      });
       stdout = result.stdout;
       stderr = result.stderr;
       if (result.cancelled) setNotice("程式已停止");
-      else setNotice(
-          (result.timedOut ? "Time Limit Exceeded" : result.exitCode === 0 ? `執行完成 · ${result.executionTimeMs} ms` : `Runtime Error · Exit ${result.exitCode}`) + (result.outputTruncated ? "（輸出過長，已截斷）" : ""),
-          result.timedOut || result.exitCode !== 0 ? "error" : "success"
+      else
+        setNotice(
+          (result.timedOut
+            ? "Time Limit Exceeded"
+            : result.exitCode === 0
+              ? `執行完成 · ${result.executionTimeMs} ms`
+              : `Runtime Error · Exit ${result.exitCode}`) +
+            (result.outputTruncated ? "（輸出過長，已截斷）" : ""),
+          result.timedOut || result.exitCode !== 0 ? "error" : "success",
         );
-    } catch (error) { stderr = String(error); setNotice(String(error), "error"); }
-    finally {
-      try { await invoke("finish_run", { runId }); } catch { /* Preserve the completed run state. */ }
+    } catch (error) {
+      stderr = String(error);
+      setNotice(String(error), "error");
+    } finally {
+      try {
+        await invoke("finish_run", { runId });
+      } catch {
+        /* Preserve the completed run state. */
+      }
       activeRunId = "";
       busy = "";
     }
@@ -924,10 +1382,15 @@
     if (!activeRunId) return;
     cancelRequested = true;
     setNotice("正在停止程式...");
-    try { await invoke("cancel_run", { runId: activeRunId }); }
-    catch (error) { setNotice(String(error), "error"); }
+    try {
+      await invoke("cancel_run", { runId: activeRunId });
+    } catch (error) {
+      setNotice(String(error), "error");
+    }
   }
-  function persistTests() { void localforage.setItem(storageKey, $state.snapshot(testCases)); }
+  function persistTests() {
+    void localforage.setItem(storageKey, $state.snapshot(testCases));
+  }
   function addTestCase() {
     const id = crypto.randomUUID();
     testCases = [...testCases, { id, name: "", input: "", expectedOutput: "" }];
@@ -947,13 +1410,22 @@
   function closeTestManager() {
     exitMode("tests");
   }
-  function updateTest(id: string, field: "name" | "input" | "expectedOutput", value: string) {
-    testCases = testCases.map((testCase) => testCase.id === id ? { ...testCase, [field]: value } : testCase);
+  function updateTest(
+    id: string,
+    field: "name" | "input" | "expectedOutput",
+    value: string,
+  ) {
+    testCases = testCases.map((testCase) =>
+      testCase.id === id ? { ...testCase, [field]: value } : testCase,
+    );
     persistTests();
   }
   async function runTests(all: boolean) {
     const path = activePath;
-    if (!toolchainsReady) { setNotice(toolchainStatus, "error"); return; }
+    if (!toolchainsReady) {
+      setNotice(toolchainStatus, "error");
+      return;
+    }
     if (!(await saveForBuild())) return;
     busy = "test";
     compilerOutput = "正在編譯測試程式...";
@@ -963,28 +1435,53 @@
     try {
       const compiled = await invoke<CompileResult>("compile_source", { path });
       compilerOutput = compiled.output || "Build Successful";
-      if (!compiled.success) { setNotice("Build Failed，測資未執行", "error"); return; }
-      const casesToRun = all ? [...testCases] : testCases.filter((testCase) => testCase.id === activeTestId);
+      if (!compiled.success) {
+        setNotice("Build Failed，測資未執行", "error");
+        return;
+      }
+      const casesToRun = all
+        ? [...testCases]
+        : testCases.filter((testCase) => testCase.id === activeTestId);
       runId = crypto.randomUUID();
       activeRunId = runId;
       cancelRequested = false;
       await invoke("register_run", { runId });
       for (const testCase of casesToRun) {
         if (cancelRequested) break;
-        const result = await invoke<RunResult>("run_source", { runId, path, input: testCase.input, timeoutMs });
-        if (result.cancelled) { cancelRequested = true; break; }
+        const result = await invoke<RunResult>("run_source", {
+          runId,
+          path,
+          input: testCase.input,
+          timeoutMs,
+        });
+        if (result.cancelled) {
+          cancelRequested = true;
+          break;
+        }
         let status: ResultStatus = "AC";
         let firstDifference: number | null = null;
         if (result.timedOut) status = "TLE";
         else if (result.exitCode !== 0) status = "RE";
         else {
-          const comparison = await invoke<CompareResult>("compare_output", { expected: testCase.expectedOutput, actual: result.stdout });
+          const comparison = await invoke<CompareResult>("compare_output", {
+            expected: testCase.expectedOutput,
+            actual: result.stdout,
+          });
           status = comparison.accepted ? "AC" : "WA";
           firstDifference = comparison.firstDifference;
         }
-        testCases = testCases.map((item) => item.id === testCase.id
-          ? { ...item, status, actualOutput: result.stdout, stderr: result.stderr, executionTimeMs: result.executionTimeMs, firstDifference }
-          : item);
+        testCases = testCases.map((item) =>
+          item.id === testCase.id
+            ? {
+                ...item,
+                status,
+                actualOutput: result.stdout,
+                stderr: result.stderr,
+                executionTimeMs: result.executionTimeMs,
+                firstDifference,
+              }
+            : item,
+        );
         stdout = result.stdout;
         stderr = result.stderr;
       }
@@ -994,13 +1491,32 @@
         setNotice("測試已停止");
         return;
       }
-      const accepted = casesToRun.every((testCase) => testCases.find((item) => item.id === testCase.id)?.status === "AC");
-      consoleTab = casesToRun.some((testCase) => testCases.find((item) => item.id === testCase.id)?.status === "WA") ? "diff" : "output";
-      setNotice(accepted ? `${casesToRun.length} 組測資全部通過` : "測資執行完成，請檢查結果", accepted ? "success" : "error");
-    } catch (error) { stderr = String(error); setNotice(String(error), "error"); }
-    finally {
+      const accepted = casesToRun.every(
+        (testCase) =>
+          testCases.find((item) => item.id === testCase.id)?.status === "AC",
+      );
+      consoleTab = casesToRun.some(
+        (testCase) =>
+          testCases.find((item) => item.id === testCase.id)?.status === "WA",
+      )
+        ? "diff"
+        : "output";
+      setNotice(
+        accepted
+          ? `${casesToRun.length} 組測資全部通過`
+          : "測資執行完成，請檢查結果",
+        accepted ? "success" : "error",
+      );
+    } catch (error) {
+      stderr = String(error);
+      setNotice(String(error), "error");
+    } finally {
       if (runId) {
-        try { await invoke("finish_run", { runId }); } catch { /* Preserve the completed test state. */ }
+        try {
+          await invoke("finish_run", { runId });
+        } catch {
+          /* Preserve the completed test state. */
+        }
       }
       activeRunId = "";
       busy = "";
@@ -1010,38 +1526,102 @@
 
 <svelte:head>
   <title>競程工作台 · IDE for Exam</title>
-  <meta name="description" content="Windows 本機 C++ 編輯、編譯與測資判題工作台" />
+  <meta
+    name="description"
+    content="Windows 本機 C++ 編輯、編譯與測資判題工作台"
+  />
 </svelte:head>
 <svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="app-shell">
   <div class="titlebar" data-tauri-drag-region>
     <div class="window-controls">
-      <button type="button" class="window-button" title="最小化" aria-label="最小化" onclick={minimizeWindow}><Minus size={16} /></button>
-      <button type="button" class="window-button" title={isMaximized ? "取消最大化" : "最大化"} aria-label={isMaximized ? "還原" : "最大化"} onclick={toggleMaximizeWindow}>{#if isMaximized}<Copy size={13} />{:else}<Square size={13} />{/if}</button>
-      <button type="button" class="window-button window-close" title="關閉" aria-label="關閉" onclick={closeWindow}><X size={17} /></button>
+      <button
+        type="button"
+        class="window-button"
+        title="最小化"
+        aria-label="最小化"
+        onclick={minimizeWindow}><Minus size={16} /></button
+      >
+      <button
+        type="button"
+        class="window-button"
+        title={isMaximized ? "取消最大化" : "最大化"}
+        aria-label={isMaximized ? "還原" : "最大化"}
+        onclick={toggleMaximizeWindow}
+        >{#if isMaximized}<Copy size={13} />{:else}<Square
+            size={13}
+          />{/if}</button
+      >
+      <button
+        type="button"
+        class="window-button window-close"
+        title="關閉"
+        aria-label="關閉"
+        onclick={closeWindow}><X size={17} /></button
+      >
     </div>
   </div>
   <div class="actionbar" data-tauri-drag-region>
     <div class="file-actions">
       <!-- 專案控制區 -->
-      <button class="text-action" onclick={() => enterMode("newProject")}><FolderPlus size={15} />建立專案</button>
-      <button class="text-action" onclick={openProject}><FolderOpen size={15} />開啟專案</button>
+      <button class="text-action" onclick={() => enterMode("newProject")}
+        ><FolderPlus size={15} />建立專案</button
+      >
+      <button class="text-action" onclick={openProject}
+        ><FolderOpen size={15} />開啟專案</button
+      >
       <span class="action-divider"></span>
       <!-- 單一檔案控制區 -->
-      <button class="text-action" onclick={newSourceFile}><CirclePlus size={15} />新檔案</button>
-      <button class="text-action" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
-      <button class="text-action" onclick={saveCurrent} disabled={!hasFile}><Save size={15} />儲存檔案</button>
+      <button class="text-action" onclick={newSourceFile}
+        ><CirclePlus size={15} />新檔案</button
+      >
+      <button class="text-action" onclick={openSourceFile}
+        ><FolderOpen size={15} />開啟檔案</button
+      >
+      <button class="text-action" onclick={saveCurrent} disabled={!hasFile}
+        ><Save size={15} />儲存檔案</button
+      >
       <span class="action-divider"></span>
       <!-- 額外功能控制區 -->
-      <button class="text-action" onclick={openProblemViewer}><FileCode2 size={15} />題目</button>
+      <button class="text-action" onclick={openProblemViewer}
+        ><FileCode2 size={15} />題目</button
+      >
     </div>
     <div class="run-actions">
-      <label class="timeout-field" title="程式逾時上限"><Clock3 size={14} /><input type="number" min="100" max="300000" step="100" bind:value={timeoutMs} aria-label="執行逾時毫秒" /><span>ms</span></label>
-      <button class="compile-button" onclick={compileCurrent} disabled={busy !== "" || !toolchainsReady || !hasFile}><Settings2 size={15} />編譯</button>
-      <button class="run-button" onclick={runProgram} disabled={busy !== "" || !toolchainsReady || !hasFile}><Play size={15} fill="currentColor" />執行</button>
-      <button class="test-button" onclick={() => runTests(true)} disabled={busy !== "" || !toolchainsReady || !hasFile}><CircleCheck size={15} />全部測試</button>
-      {#if activeRunId && (busy === "run" || busy === "test")}<button class="stop-button" onclick={stopCurrentRun}><Square size={13} fill="currentColor" />停止</button>{/if}
+      <label class="timeout-field" title="程式逾時上限"
+        ><Clock3 size={14} /><input
+          type="number"
+          min="100"
+          max="300000"
+          step="100"
+          bind:value={timeoutMs}
+          aria-label="執行逾時毫秒"
+        /><span>ms</span></label
+      >
+      <button
+        class="compile-button"
+        onclick={compileCurrent}
+        disabled={busy !== "" || !toolchainsReady || !hasFile}
+        ><Settings2 size={15} />編譯</button
+      >
+      <button
+        class="run-button"
+        onclick={runProgram}
+        disabled={busy !== "" || !toolchainsReady || !hasFile}
+        ><Play size={15} fill="currentColor" />執行</button
+      >
+      <button
+        class="test-button"
+        onclick={() => runTests(true)}
+        disabled={busy !== "" || !toolchainsReady || !hasFile}
+        ><CircleCheck size={15} />全部測試</button
+      >
+      {#if activeRunId && (busy === "run" || busy === "test")}<button
+          class="stop-button"
+          onclick={stopCurrentRun}
+          ><Square size={13} fill="currentColor" />停止</button
+        >{/if}
     </div>
   </div>
   <main
@@ -1055,48 +1635,160 @@
   >
     <aside id="file-sidebar" class="sidebar">
       <section class="side-section files-section">
-        <div class="section-heading"><span>專案檔案 <small>{filePaths.length}</small></span><button class="mini-icon" title="新增 C++ 檔案" aria-label="新增 C++ 檔案" onclick={newSourceFile}><CirclePlus size={15} /></button></div>
-        {#if filePaths.length}<ul class="file-list">{#each filePaths as file (file)}<li><button class:active={samePath(file, activePath)} class:opened={!!findTab(file)} class="file-item" onclick={() => openFile(file)} title={`開啟於 ${paneName(activeEditorId)}`}
-          oncontextmenu={(event) => { event.preventDefault(); void openFileInNextPane(file); }}
-        ><FileCode2 size={15} /><span>{relativeFile(file)}</span>{#if isPathDirty(file)}<i class="file-dirty"></i>{/if}</button></li>{/each}</ul>
+        <div class="section-heading">
+          <span>專案檔案 <small>{filePaths.length}</small></span><button
+            class="mini-icon"
+            title="新增 C++ 檔案"
+            aria-label="新增 C++ 檔案"
+            onclick={newSourceFile}><CirclePlus size={15} /></button
+          >
+        </div>
+        {#if filePaths.length}<ul class="file-list">
+            {#each filePaths as file (file)}<li>
+                <button
+                  class:active={samePath(file, activePath)}
+                  class:opened={!!findTab(file)}
+                  class="file-item"
+                  onclick={() => openFile(file)}
+                  title={`開啟於 ${paneName(activeEditorId)}`}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    void openFileInNextPane(file);
+                  }}
+                  ><FileCode2 size={15} /><span>{relativeFile(file)}</span
+                  >{#if isPathDirty(file)}<i class="file-dirty"
+                    ></i>{/if}</button
+                >
+              </li>{/each}
+          </ul>
         {:else}<p class="empty-note">開啟資料夾以瀏覽來源檔</p>{/if}
       </section>
     </aside>
     <section class="editor-panel" bind:this={editorPanelElement}>
-      <div class="editor-wrap" class:dragging={splitDrag !== null} bind:this={editorWrapElement} style={`--pane-cols:${paneColumns}`} inert={uiMode !== "code"}>
+      <div
+        class="editor-wrap"
+        class:dragging={splitDrag !== null}
+        bind:this={editorWrapElement}
+        style={`--pane-cols:${paneColumns}`}
+        inert={uiMode !== "code"}
+      >
         {#each editorPanes as pane, index (pane.id)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="editor-pane" class:active={pane.id === activeEditorId} onfocusin={() => focusPane(pane.id)} onpointerdown={() => focusPane(pane.id)}>
+          <div
+            class="editor-pane"
+            class:active={pane.id === activeEditorId}
+            onfocusin={() => focusPane(pane.id)}
+            onpointerdown={() => focusPane(pane.id)}
+          >
             <div class="editor-tabbar">
-              <div class="editor-tabs" role="tablist" aria-label={`${pane.name} 已開啟的檔案`} bind:this={tabStripElements[pane.id]} onwheel={(event) => scrollTabs(event, pane.id)}>
+              <div
+                class="editor-tabs"
+                role="tablist"
+                aria-label={`${pane.name} 已開啟的檔案`}
+                bind:this={tabStripElements[pane.id]}
+                onwheel={(event) => scrollTabs(event, pane.id)}
+              >
                 {#each pane.tabs as tab (tab.path)}
-                  <div class="editor-tab" class:active={tab.path === activePath && pane.id === activeEditorId} class:shown={pane.id !== activeEditorId && samePath(editorPaths.get(pane.id) ?? "", tab.path)} class:dirty={tab.dirty}>
-                    <button type="button" class="tab-main" role="tab" aria-selected={tab.path === activePath && pane.id === activeEditorId} title={tab.path}
+                  <div
+                    class="editor-tab"
+                    class:active={tab.path === activePath &&
+                      pane.id === activeEditorId}
+                    class:shown={pane.id !== activeEditorId &&
+                      samePath(editorPaths.get(pane.id) ?? "", tab.path)}
+                    class:dirty={tab.dirty}
+                  >
+                    <button
+                      type="button"
+                      class="tab-main"
+                      role="tab"
+                      aria-selected={tab.path === activePath &&
+                        pane.id === activeEditorId}
+                      title={tab.path}
                       onclick={() => activateTab(tab.path, pane.id)}
-                      onmousedown={(event) => { if (event.button === 1) event.preventDefault(); }}
-                      onauxclick={(event) => { if (event.button === 1) { event.preventDefault(); closeTab(tab.path, pane.id); } }}
-                    ><FileCode2 size={14} /><span>{tabLabel(tab.path)}</span></button>
-                    <button type="button" class="tab-close" title="關閉 (Ctrl+W)" aria-label={`關閉 ${tabLabel(tab.path)}`} onclick={() => closeTab(tab.path, pane.id)}><i class="tab-dirty-dot"></i><X size={13} /></button>
+                      onmousedown={(event) => {
+                        if (event.button === 1) event.preventDefault();
+                      }}
+                      onauxclick={(event) => {
+                        if (event.button === 1) {
+                          event.preventDefault();
+                          closeTab(tab.path, pane.id);
+                        }
+                      }}
+                      ><FileCode2 size={14} /><span>{tabLabel(tab.path)}</span
+                      ></button
+                    >
+                    <button
+                      type="button"
+                      class="tab-close"
+                      title="關閉 (Ctrl+W)"
+                      aria-label={`關閉 ${tabLabel(tab.path)}`}
+                      onclick={() => closeTab(tab.path, pane.id)}
+                      ><i class="tab-dirty-dot"></i><X size={13} /></button
+                    >
                   </div>
                 {:else}
-                  <div class="editor-tab empty-tab active"><span class="tab-main"><FileCode2 size={14} /><span>{pane.name} · 尚未開啟檔案</span></span></div>
+                  <div class="editor-tab empty-tab active">
+                    <span class="tab-main"
+                      ><FileCode2 size={14} /><span
+                        >{pane.name} · 尚未開啟檔案</span
+                      ></span
+                    >
+                  </div>
                 {/each}
               </div>
               {#if index === editorPanes.length - 1}
                 <div class="editor-tools">
-                  <button type="button" class="editor-split-toggle" disabled={editorPanes.length >= maxEditorPanes} title={editorPanes.length >= maxEditorPanes ? `編輯區塊已達上限 (${maxEditorPanes})` : "新增編輯區塊 (Ctrl+\\)"} onclick={addEditorPane}><CirclePlus size={14} /><span>新增編輯區</span><span class="editor-pane-count">{editorPanes.length}/{maxEditorPanes}</span></button>
-                  <div class="editor-shortcut"><Search size={12} /><span>Ctrl F</span></div>
+                  <button
+                    type="button"
+                    class="editor-split-toggle"
+                    disabled={editorPanes.length >= maxEditorPanes}
+                    title={editorPanes.length >= maxEditorPanes
+                      ? `編輯區塊已達上限 (${maxEditorPanes})`
+                      : "新增編輯區塊 (Ctrl+\\)"}
+                    onclick={addEditorPane}
+                    ><CirclePlus size={14} /><span>新增編輯區</span><span
+                      class="editor-pane-count"
+                      >{editorPanes.length}/{maxEditorPanes}</span
+                    ></button
+                  >
+                  <div class="editor-shortcut">
+                    <Search size={12} /><span>Ctrl F</span>
+                  </div>
                 </div>
               {/if}
             </div>
             <div class="editor-host" bind:this={editorHosts[pane.id]}></div>
-            {#if editorPanes.some((item) => item.tabs.length > 0) && !editorPaths.get(pane.id)}<div class="editor-pane-empty">尚未開啟檔案</div>{/if}
+            {#if editorPanes.some((item) => item.tabs.length > 0) && !editorPaths.get(pane.id)}<div
+                class="editor-pane-empty"
+              >
+                尚未開啟檔案
+              </div>{/if}
           </div>
           {#if index < editorPanes.length - 1}
             {@const leftPane = editorPanes[index]}
             {@const rightPane = editorPanes[index + 1]}
-            {@const leftPercent = Math.round((leftPane.weight / (leftPane.weight + rightPane.weight)) * 100)}
-            <button type="button" class="splitter editor-divider" role="slider" aria-orientation="vertical" aria-valuemin="15" aria-valuemax="85" aria-valuenow={leftPercent} aria-valuetext={`左側編輯區 ${leftPercent}%`} aria-label="調整相鄰編輯區寬度" title="拖曳調整寬度，雙擊還原" onpointerdown={(event) => startSplitDrag(event, index)} onpointermove={moveSplitDrag} onpointerup={endSplitDrag} onpointercancel={endSplitDrag} ondblclick={resetPaneWeights} onkeydown={(event) => splitDividerKey(event, index)}><span></span></button>
+            {@const leftPercent = Math.round(
+              (leftPane.weight / (leftPane.weight + rightPane.weight)) * 100,
+            )}
+            <button
+              type="button"
+              class="splitter editor-divider"
+              role="slider"
+              aria-orientation="vertical"
+              aria-valuemin="15"
+              aria-valuemax="85"
+              aria-valuenow={leftPercent}
+              aria-valuetext={`左側編輯區 ${leftPercent}%`}
+              aria-label="調整相鄰編輯區寬度"
+              title="拖曳調整寬度，雙擊還原"
+              onpointerdown={(event) => startSplitDrag(event, index)}
+              onpointermove={moveSplitDrag}
+              onpointerup={endSplitDrag}
+              onpointercancel={endSplitDrag}
+              ondblclick={resetPaneWeights}
+              onkeydown={(event) => splitDividerKey(event, index)}
+              ><span></span></button
+            >
           {/if}
         {/each}
         {#if editorPanes.every((pane) => pane.tabs.length === 0)}
@@ -1105,161 +1797,548 @@
             <strong>尚未開啟任何檔案</strong>
             <p>新增檔案時需先選擇儲存位置，儲存後即可開始編輯。</p>
             <div class="editor-empty-actions">
-              <button type="button" class="empty-primary" onclick={newSourceFile}><CirclePlus size={15} />新增檔案</button>
-              <button type="button" class="empty-secondary" onclick={openSourceFile}><FolderOpen size={15} />開啟檔案</button>
+              <button
+                type="button"
+                class="empty-primary"
+                onclick={newSourceFile}><CirclePlus size={15} />新增檔案</button
+              >
+              <button
+                type="button"
+                class="empty-secondary"
+                onclick={openSourceFile}
+                ><FolderOpen size={15} />開啟檔案</button
+              >
             </div>
           </div>
         {/if}
       </div>
     </section>
     <aside id="local-judge" class="case-sidebar">
-      <div class="panel-title-row"><div><span class="eyebrow">LOCAL JUDGE</span><h2>測資列表 <small>len: {testCases.length}</small></h2></div><button class="case-editor-button" title="開啟測資編輯器" aria-label="開啟測資編輯器" onclick={openTestManager}><Pencil size={13} />編輯測資</button></div>
+      <div class="panel-title-row">
+        <div>
+          <span class="eyebrow">LOCAL JUDGE</span>
+          <h2>測資列表 <small>len: {testCases.length}</small></h2>
+        </div>
+        <button
+          class="case-editor-button"
+          title="開啟測資編輯器"
+          aria-label="開啟測資編輯器"
+          onclick={openTestManager}><Pencil size={13} />編輯測資</button
+        >
+      </div>
       {#if testCases.length}
-        <ul class="case-list">{#each testCases as testCase, index (testCase.id)}<li class="case-row">
-          <button
-            class="case-chip"
-            class:case-ac={testCase.status === "AC"}
-            class:case-wa={testCase.status === "WA"}
-            class:case-other={testCase.status !== "AC" && testCase.status !== "WA"}
-            class:active={activeTestId === testCase.id}
-            onclick={() => activeTestId = testCase.id}
-            title={`檢視 ${testCase.name}`}
-          >
-            <span class="case-index">#{String(index + 1).padStart(2, "0")} {#if testCase.name != ""}<strong>{testCase.name}</strong>{/if}</span>
-            <span class="case-result">{testCase.status ?? "—"}</span>
-          </button>
-          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
-        </li>{/each}</ul>
+        <ul class="case-list">
+          {#each testCases as testCase, index (testCase.id)}<li
+              class="case-row"
+            >
+              <button
+                class="case-chip"
+                class:case-ac={testCase.status === "AC"}
+                class:case-wa={testCase.status === "WA"}
+                class:case-other={testCase.status !== "AC" &&
+                  testCase.status !== "WA"}
+                class:active={activeTestId === testCase.id}
+                onclick={() => (activeTestId = testCase.id)}
+                title={`檢視 ${testCase.name}`}
+              >
+                <span class="case-index"
+                  >#{String(index + 1).padStart(2, "0")}
+                  {#if testCase.name != ""}<strong>{testCase.name}</strong
+                    >{/if}</span
+                >
+                <span class="case-result">{testCase.status ?? "—"}</span>
+              </button>
+              <button
+                type="button"
+                class="mini-icon remove-case"
+                title="刪除測資"
+                aria-label="刪除測資"
+                onclick={() => removeTestCase(testCase.id)}
+                disabled={testCases.length === 1}><Trash2 size={13} /></button
+              >
+            </li>{/each}
+        </ul>
       {:else}<p class="empty-note">尚無測資，點擊右上角開啟主控台新增。</p>{/if}
     </aside>
     <section class="console-panel" id="console-panel">
-      <div class="console-header"><div class="console-tabs" role="tablist" aria-label="執行結果">
-        <button class:selected={consoleTab === "output"} role="tab" aria-selected={consoleTab === "output"} onclick={() => consoleTab = "output"}><Terminal size={14} />程式輸出</button>
-        <button class:selected={consoleTab === "build"} role="tab" aria-selected={consoleTab === "build"} onclick={() => consoleTab = "build"}><Settings2 size={14} />編譯器</button>
-        <button class:selected={consoleTab === "diff"} role="tab" aria-selected={consoleTab === "diff"} onclick={() => consoleTab = "diff"}><Code2 size={14} />輸出差異</button>
-      </div><div class="console-header-right"><div class="console-state" class:error={noticeTone === "error"} class:success={noticeTone === "success"}>{#if busy}<span class="working-indicator"></span>{/if}{notice}</div><button type="button" class="console-hide" title="隱藏終端機 (Ctrl+`)" aria-label="隱藏終端機" onclick={() => setConsoleOpen(false)}><X size={14} /></button></div></div>
-      {#if consoleTab === "output"}<div class="output-columns"><div class="output-block"><div class="output-label">STDOUT</div><pre>{stdout || "執行結果將顯示於此"}</pre></div><div class="output-block stderr-block"><div class="output-label">STDERR</div><pre>{stderr || "無錯誤輸出"}</pre></div></div>
-      {:else if consoleTab === "build"}<pre class="compiler-output">{compilerOutput || "編譯器訊息將顯示於此"}</pre>
+      <div class="console-header">
+        <div class="console-tabs" role="tablist" aria-label="執行結果">
+          <button
+            class:selected={consoleTab === "output"}
+            role="tab"
+            aria-selected={consoleTab === "output"}
+            onclick={() => (consoleTab = "output")}
+            ><Terminal size={14} />程式輸出</button
+          >
+          <button
+            class:selected={consoleTab === "build"}
+            role="tab"
+            aria-selected={consoleTab === "build"}
+            onclick={() => (consoleTab = "build")}
+            ><Settings2 size={14} />編譯器</button
+          >
+          <button
+            class:selected={consoleTab === "diff"}
+            role="tab"
+            aria-selected={consoleTab === "diff"}
+            onclick={() => (consoleTab = "diff")}
+            ><Code2 size={14} />輸出差異</button
+          >
+        </div>
+        <div class="console-header-right">
+          <div
+            class="console-state"
+            class:error={noticeTone === "error"}
+            class:success={noticeTone === "success"}
+          >
+            {#if busy}<span class="working-indicator"></span>{/if}{notice}
+          </div>
+          <button
+            type="button"
+            class="console-hide"
+            title="隱藏終端機 (Ctrl+`)"
+            aria-label="隱藏終端機"
+            onclick={() => setConsoleOpen(false)}><X size={14} /></button
+          >
+        </div>
+      </div>
+      {#if consoleTab === "output"}<div class="output-columns">
+          <div class="output-block">
+            <div class="output-label">STDOUT</div>
+            <pre>{stdout || "執行結果將顯示於此"}</pre>
+          </div>
+          <div class="output-block stderr-block">
+            <div class="output-label">STDERR</div>
+            <pre>{stderr || "無錯誤輸出"}</pre>
+          </div>
+        </div>
+      {:else if consoleTab === "build"}<pre
+          class="compiler-output">{compilerOutput ||
+            "編譯器訊息將顯示於此"}</pre>
       {:else if activeTest}
-        {@const diff = activeTest.actualOutput === undefined ? null : buildDiff(activeTest.expectedOutput, activeTest.actualOutput)}
+        {@const diff =
+          activeTest.actualOutput === undefined
+            ? null
+            : buildDiff(activeTest.expectedOutput, activeTest.actualOutput)}
         {@const inputLines = numberedLines(activeTest.input)}
         {@const expectedLines = numberedLines(activeTest.expectedOutput)}
         {@const actualLines = numberedLines(activeTest.actualOutput ?? "")}
-        {#snippet colSplitter(index: number)}<button type="button" class="splitter col-splitter" class:active={diffResize?.index === index} role="slider" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={76} aria-valuenow={Math.round(diffCols[index] * 100)} aria-label={index === 0 ? "調整 STANDARD INPUT 與 EXPECTED 的寬度" : "調整 EXPECTED 與 ACTUAL 的寬度"} title="拖曳調整欄寬（雙擊還原）" onpointerdown={(event) => startDiffResize(event, index)} onpointermove={moveDiffResize} onpointerup={endDiffResize} onpointercancel={endDiffResize} onkeydown={(event) => resizeDiffWithKeyboard(event, index)} ondblclick={resetDiffColumns}><span></span></button>{/snippet}
-        <div class="diff-columns" bind:this={diffColumnsElement} style={diffColumnsStyle()}>
-          <div><div class="output-label">STANDARD INPUT</div>{#if activeTest.input}<pre class="numbered" style={gutterStyle(inputLines.length)}>{#each inputLines as line, i}<span class="ln" data-n={i + 1}>{line}</span>{/each}</pre>{:else}<pre>（無輸入）</pre>{/if}</div>
+        {#snippet colSplitter(index: number)}<button
+            type="button"
+            class="splitter col-splitter"
+            class:active={diffResize?.index === index}
+            role="slider"
+            aria-orientation="vertical"
+            aria-valuemin={12}
+            aria-valuemax={76}
+            aria-valuenow={Math.round(diffCols[index] * 100)}
+            aria-label={index === 0
+              ? "調整 STANDARD INPUT 與 EXPECTED 的寬度"
+              : "調整 EXPECTED 與 ACTUAL 的寬度"}
+            title="拖曳調整欄寬（雙擊還原）"
+            onpointerdown={(event) => startDiffResize(event, index)}
+            onpointermove={moveDiffResize}
+            onpointerup={endDiffResize}
+            onpointercancel={endDiffResize}
+            onkeydown={(event) => resizeDiffWithKeyboard(event, index)}
+            ondblclick={resetDiffColumns}><span></span></button
+          >{/snippet}
+        <div
+          class="diff-columns"
+          bind:this={diffColumnsElement}
+          style={diffColumnsStyle()}
+        >
+          <div>
+            <div class="output-label">STANDARD INPUT</div>
+            {#if activeTest.input}<pre
+                class="numbered"
+                style={gutterStyle(
+                  inputLines.length,
+                )}>{#each inputLines as line, i}<span class="ln" data-n={i + 1}
+                    >{line}</span
+                  >{/each}</pre>{:else}<pre>（無輸入）</pre>{/if}
+          </div>
           {@render colSplitter(0)}
-          <div><div class="output-label">EXPECTED</div><pre class="numbered" style={gutterStyle(expectedLines.length)}>{#each expectedLines as line, i}<span class="ln" data-n={i + 1}>{line}</span>{/each}</pre></div>
+          <div>
+            <div class="output-label">EXPECTED</div>
+            <pre
+              class="numbered"
+              style={gutterStyle(
+                expectedLines.length,
+              )}>{#each expectedLines as line, i}<span class="ln" data-n={i + 1}
+                  >{line}</span
+                >{/each}</pre>
+          </div>
           {@render colSplitter(1)}
           <div>
-            <div class="output-label actual-label">ACTUAL{#if diff && showDiffMarks && diff.hasDiff}<span class="diff-count">{diff.diffCount} 行有差異</span>{/if}{#if diff}<button type="button" class="diff-toggle" class:on={showDiffMarks} aria-pressed={showDiffMarks} title="切換原始輸出／差異標示" onclick={() => showDiffMarks = !showDiffMarks}>{showDiffMarks ? "Show Difference：On" : "Show Difference：Off"}</button>{/if}</div>
-            {#if diff && showDiffMarks}<pre class="numbered" style={gutterStyle(diff.lineCount)}>{#each diff.rows as row}<span class="ln" data-n={row.line ?? ""}>{#if row.kind === "missing"}<span class="diff-ghost">{row.segments[0].text || " "}</span>{:else}{#each row.segments as seg}{#if seg.missing}<span class="diff-missing" title={"缺少：" + seg.missing}></span>{:else if seg.bad}<span class="diff-bad">{seg.text}</span>{:else}{seg.text}{/if}{/each}{/if}</span>{/each}</pre>
-            {:else if diff}<pre class="numbered" style={gutterStyle(actualLines.length)}>{#each actualLines as line, i}<span class="ln" data-n={i + 1}>{line}</span>{/each}</pre>
+            <div class="output-label actual-label">
+              ACTUAL{#if diff && showDiffMarks && diff.hasDiff}<span
+                  class="diff-count">{diff.diffCount} 行有差異</span
+                >{/if}{#if diff}<button
+                  type="button"
+                  class="diff-toggle"
+                  class:on={showDiffMarks}
+                  aria-pressed={showDiffMarks}
+                  title="切換原始輸出／差異標示"
+                  onclick={() => (showDiffMarks = !showDiffMarks)}
+                  >{showDiffMarks
+                    ? "Show Difference：On"
+                    : "Show Difference：Off"}</button
+                >{/if}
+            </div>
+            {#if diff && showDiffMarks}<pre
+                class="numbered"
+                style={gutterStyle(
+                  diff.lineCount,
+                )}>{#each diff.rows as row}<span
+                    class="ln"
+                    data-n={row.line ?? ""}
+                    >{#if row.kind === "missing"}<span class="diff-ghost"
+                        >{row.segments[0].text || " "}</span
+                      >{:else}{#each row.segments as seg}{#if seg.missing}<span
+                            class="diff-missing"
+                            title={"缺少：" + seg.missing}
+                          ></span>{:else if seg.bad}<span class="diff-bad"
+                            >{seg.text}</span
+                          >{:else}{seg.text}{/if}{/each}{/if}</span
+                  >{/each}</pre>
+            {:else if diff}<pre
+                class="numbered"
+                style={gutterStyle(
+                  actualLines.length,
+                )}>{#each actualLines as line, i}<span class="ln" data-n={i + 1}
+                    >{line}</span
+                  >{/each}</pre>
             {:else}<pre>尚未執行此測資</pre>{/if}
           </div>
           {#if diff?.hasDiff}<p class="diff-note">{diff.firstNote}</p>
-          {:else if diff && activeTest.status === "WA"}<p class="diff-note">僅有結尾換行等不可見差異</p>{/if}
+          {:else if diff && activeTest.status === "WA"}<p class="diff-note">
+              僅有結尾換行等不可見差異
+            </p>{/if}
         </div>
       {:else}<pre class="compiler-output">請先建立測資。</pre>{/if}
     </section>
-    <button type="button" class="splitter splitter-sidebar" role="slider" aria-orientation={viewportMode === "mobile" ? "horizontal" : "vertical"} aria-valuemin={viewportMode === "mobile" ? 100 : 155} aria-valuemax={viewportMode === "mobile" ? 240 : 360} aria-valuenow={viewportMode === "mobile" ? sidebarHeight : sidebarWidth} aria-label="調整側欄大小" title="拖曳調整側欄大小" onpointerdown={(event) => startResize(event, "sidebar")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "sidebar")}><span></span></button>
-    <button type="button" class="splitter splitter-main" role="slider" aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"} aria-valuemin={viewportMode === "desktop" ? 235 : 240} aria-valuemax={viewportMode === "desktop" ? 480 : 560} aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight} aria-label="調整編輯器與測資比例" title="拖曳調整編輯器與測資比例" onpointerdown={(event) => startResize(event, "main")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "main")}><span></span></button>
-    <button type="button" class="splitter splitter-console" role="slider" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="420" aria-valuenow={consoleHeight} aria-label="調整輸出面板高度" title="拖曳調整輸出面板高度" onpointerdown={(event) => startResize(event, "console")} onpointermove={moveResize} onpointerup={endResize} onpointercancel={endResize} onkeydown={(event) => resizeWithKeyboard(event, "console")}><span></span></button>
+    <button
+      type="button"
+      class="splitter splitter-sidebar"
+      role="slider"
+      aria-orientation={viewportMode === "mobile" ? "horizontal" : "vertical"}
+      aria-valuemin={viewportMode === "mobile" ? 100 : 155}
+      aria-valuemax={viewportMode === "mobile" ? 240 : 360}
+      aria-valuenow={viewportMode === "mobile" ? sidebarHeight : sidebarWidth}
+      aria-label="調整側欄大小"
+      title="拖曳調整側欄大小"
+      onpointerdown={(event) => startResize(event, "sidebar")}
+      onpointermove={moveResize}
+      onpointerup={endResize}
+      onpointercancel={endResize}
+      onkeydown={(event) => resizeWithKeyboard(event, "sidebar")}
+      ><span></span></button
+    >
+    <button
+      type="button"
+      class="splitter splitter-main"
+      role="slider"
+      aria-orientation={viewportMode === "desktop" ? "vertical" : "horizontal"}
+      aria-valuemin={viewportMode === "desktop" ? 235 : 240}
+      aria-valuemax={viewportMode === "desktop" ? 480 : 560}
+      aria-valuenow={viewportMode === "desktop" ? testWidth : editorHeight}
+      aria-label="調整編輯器與測資比例"
+      title="拖曳調整編輯器與測資比例"
+      onpointerdown={(event) => startResize(event, "main")}
+      onpointermove={moveResize}
+      onpointerup={endResize}
+      onpointercancel={endResize}
+      onkeydown={(event) => resizeWithKeyboard(event, "main")}
+      ><span></span></button
+    >
+    <button
+      type="button"
+      class="splitter splitter-console"
+      role="slider"
+      aria-orientation="horizontal"
+      aria-valuemin="150"
+      aria-valuemax="420"
+      aria-valuenow={consoleHeight}
+      aria-label="調整輸出面板高度"
+      title="拖曳調整輸出面板高度"
+      onpointerdown={(event) => startResize(event, "console")}
+      onpointermove={moveResize}
+      onpointerup={endResize}
+      onpointercancel={endResize}
+      onkeydown={(event) => resizeWithKeyboard(event, "console")}
+      ><span></span></button
+    >
   </main>
   <footer class="statusbar">
     <span class="status-project">
       <span class="compiler-dot"></span>
       {projectPath || "本機工作區"}
     </span>
-    <span class="status-toolchain" class:ready={toolchainsReady}>{toolchainStatus}</span>
+    <span class="status-toolchain" class:ready={toolchainsReady}
+      >{toolchainStatus}</span
+    >
     {#if !consoleOpen}
-      <span class="status-notice" class:error={noticeTone === "error"} class:success={noticeTone === "success"} title={notice}>{notice}</span>
+      <span
+        class="status-notice"
+        class:error={noticeTone === "error"}
+        class:success={noticeTone === "success"}
+        title={notice}>{notice}</span
+      >
     {/if}
 
     <span class="status-right">
-      <button type="button" class="status-console-toggle" class:active={fileSidebarOpen} aria-pressed={fileSidebarOpen} aria-controls="file-sidebar" title="檔案側欄 (Ctrl+Shift+E)" onclick={toggleFileSidebar}><FolderOpen size={12} /></button>
-      <button type="button" class="status-console-toggle" class:active={localJudgeOpen} aria-pressed={localJudgeOpen} aria-controls="local-judge" title="Local Judge (Ctrl+Shift+J)" onclick={toggleLocalJudge}><CircleCheck size={12} /></button>
-      <button type="button" class="status-console-toggle" class:active={consoleOpen} aria-pressed={consoleOpen} aria-controls="console-panel" title="終端機 (Ctrl+`)" onclick={() => toggleConsole()}><Terminal size={12} /></button>
+      <button
+        type="button"
+        class="status-console-toggle"
+        class:active={fileSidebarOpen}
+        aria-pressed={fileSidebarOpen}
+        aria-controls="file-sidebar"
+        title="檔案側欄 (Ctrl+Shift+E)"
+        onclick={toggleFileSidebar}><FolderOpen size={12} /></button
+      >
+      <button
+        type="button"
+        class="status-console-toggle"
+        class:active={localJudgeOpen}
+        aria-pressed={localJudgeOpen}
+        aria-controls="local-judge"
+        title="Local Judge (Ctrl+Shift+J)"
+        onclick={toggleLocalJudge}><CircleCheck size={12} /></button
+      >
+      <button
+        type="button"
+        class="status-console-toggle"
+        class:active={consoleOpen}
+        aria-pressed={consoleOpen}
+        aria-controls="console-panel"
+        title="終端機 (Ctrl+`)"
+        onclick={() => toggleConsole()}><Terminal size={12} /></button
+      >
       <span>競程工作台 <b>0.1.0</b></span>
     </span>
   </footer>
 </div>
 
-{#if showNewProject}<div class="modal-backdrop"><dialog open class="project-modal" aria-labelledby="new-project-title">
-  <div class="modal-icon"><FolderPlus size={19} /></div><h2 id="new-project-title">建立 C++ 專案</h2><p>選擇儲存位置後，工作台會建立 main.cpp。</p>
-  <form onsubmit={createProject}><label for="project-name">專案名稱</label><input id="project-name" bind:value={projectName} placeholder="例如：apcs-practice" /><div class="modal-actions"><button type="button" class="cancel-button" onclick={() => exitMode("newProject")}>取消</button><button type="submit" class="confirm-button" disabled={!projectName.trim()}>選擇位置並建立</button></div></form>
-</dialog></div>{/if}
-
-{#if showProblemViewer}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) clearProblemViewer(); }}><dialog open class="project-modal problem-modal" aria-labelledby="problem-title">
-  <div class="modal-title-row">
-    <div class="modal-icon"><FileCode2 size={19} /></div>
-    <button type="button" class="mini-icon modal-close" title="關閉" aria-label="關閉" onclick={clearProblemViewer}><CircleX size={18} /></button>
-  </div>
-  <h2 id="problem-title">TIOJ 題目</h2>
-  <form class="problem-form" onsubmit={loadProblem}>
-    <label for="problem-url">題目網址</label>
-    <div class="problem-url-row">
-      <input id="problem-url" bind:value={problemUrl} type="url" placeholder="https://tioj.ck.tp.edu.tw/problems/123" autocomplete="url" spellcheck="false" />
-      <button type="submit" class="problem-load-button" disabled={problemLoading}> {problemLoading ? "讀取中..." : "讀取題目"} </button>
-    </div>
-    <p class="problem-status" class:error={problemError}>{problemStatus}</p>
-    {#if problemError}<p class="problem-error" role="alert">{problemError}</p>{/if}
-  </form>
-  {#if problem}
-    <div class="problem-content">
-      <div class="problem-panel">
-        {#each problemSections as section (section.id)}
-          <section class="problem-section" data-section={section.id}>
-            <h3 class="problem-section-title">{section.label}</h3>
-            <div class="problem-prose">
-              {#if problemHtml[section.id]}{@html problemHtml[section.id]}{:else}<p class="problem-empty">（此區段沒有內容）</p>{/if}
-            </div>
-          </section>
-        {/each}
-      </div>
-    </div>
-  {/if}
-</dialog></div>{/if}
-
-{#if showTestManager}<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeTestManager(); }}><dialog open class="project-modal test-manager-modal" aria-labelledby="test-manager-title">
-  <div class="modal-title-row">
-    <div class="modal-icon"><Code2 size={19} /></div>
-    <button type="button" class="mini-icon modal-close" title="關閉" aria-label="關閉" onclick={closeTestManager}><CircleX size={18} /></button>
-  </div>
-  <h2 id="test-manager-title">測資編輯器</h2>
-  <div class="test-manager-body">
-    <div class="test-manager-editor">
-      {#if activeTest}
-        <div class="case-name-row">
-          <input class="case-name" value={activeTest.name} aria-label="測資名稱" placeholder="請輸入測資名稱" onchange={(event) => updateTest(activeTest.id, "name", event.currentTarget.value)} />
-          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(activeTest.id)} disabled={testCases.length === 1}><Trash2 size={14} /></button>
-        </div>
-        <label class="code-field-label" for="test-input">STANDARD INPUT</label><textarea id="test-input" class="case-textarea" value={activeTest.input} oninput={(event) => updateTest(activeTest.id, "input", event.currentTarget.value)} spellcheck="false"></textarea>
-        <label class="code-field-label" for="test-expected">EXPECTED OUTPUT</label><textarea id="test-expected" class="case-textarea expected-area" value={activeTest.expectedOutput} oninput={(event) => updateTest(activeTest.id, "expectedOutput", event.currentTarget.value)} spellcheck="false"></textarea>
-        <div class="case-result-row">{#if activeTest.status}<span class:status-ac={activeTest.status === "AC"} class:status-fail={activeTest.status !== "AC"} class="result-pill">{activeTest.status}</span>{:else}<span class="result-placeholder">尚未執行</span>{/if}{#if activeTest.executionTimeMs !== undefined}<span>{activeTest.executionTimeMs} ms</span>{/if}</div>
-      {:else}
-        <p class="empty-note">尚無測資，請於右側新增一筆。</p>
-      {/if}
-    </div>
-    <aside class="test-manager-list">
-      <div class="panel-title-row"><h2>測資列表 <small>len: {testCases.length}</small></h2><button class="mini-icon" title="新增測資" aria-label="新增測資" onclick={addTestCase}><CirclePlus size={15} /></button></div>
-      {#if testCases.length}
-        <ul class="case-list">{#each testCases as testCase, index(testCase.id)}<li class="case-row">
+{#if showNewProject}<div class="modal-backdrop">
+    <dialog open class="project-modal" aria-labelledby="new-project-title">
+      <div class="modal-icon"><FolderPlus size={19} /></div>
+      <h2 id="new-project-title">建立 C++ 專案</h2>
+      <p>選擇儲存位置後，工作台會建立 main.cpp。</p>
+      <form onsubmit={createProject}>
+        <label for="project-name">專案名稱</label><input
+          id="project-name"
+          bind:value={projectName}
+          placeholder="例如：apcs-practice"
+        />
+        <div class="modal-actions">
           <button
-            class="case-chip"
-            class:case-ac={testCase.status === "AC"}
-            class:case-wa={testCase.status === "WA"}
-            class:case-other={testCase.status !== "AC" && testCase.status !== "WA"}
-            class:active={activeTestId === testCase.id}
-            onclick={() => activeTestId = testCase.id}
-            title={`編輯 ${testCase.name}`}
+            type="button"
+            class="cancel-button"
+            onclick={() => exitMode("newProject")}>取消</button
+          ><button
+            type="submit"
+            class="confirm-button"
+            disabled={!projectName.trim()}>選擇位置並建立</button
           >
-            <span class="case-index">#{String(index + 1).padStart(2, "0")} {#if testCase.name != ""}<strong>{testCase.name}</strong>{/if}</span>
-            <span class="case-result">{testCase.status ?? "—"}</span>
+        </div>
+      </form>
+    </dialog>
+  </div>{/if}
+
+{#if showProblemViewer}<div
+    class="modal-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) clearProblemViewer();
+    }}
+  >
+    <dialog
+      open
+      class="project-modal problem-modal"
+      aria-labelledby="problem-title"
+    >
+      <div class="modal-title-row">
+        <div class="modal-icon"><FileCode2 size={19} /></div>
+        <button
+          type="button"
+          class="mini-icon modal-close"
+          title="關閉"
+          aria-label="關閉"
+          onclick={clearProblemViewer}><CircleX size={18} /></button
+        >
+      </div>
+      <h2 id="problem-title">TIOJ 題目</h2>
+      <form class="problem-form" onsubmit={loadProblem}>
+        <label for="problem-url">題目網址</label>
+        <div class="problem-url-row">
+          <input
+            id="problem-url"
+            bind:value={problemUrl}
+            type="url"
+            placeholder="https://tioj.ck.tp.edu.tw/problems/123"
+            autocomplete="url"
+            spellcheck="false"
+          />
+          <button
+            type="submit"
+            class="problem-load-button"
+            disabled={problemLoading}
+          >
+            {problemLoading ? "讀取中..." : "讀取題目"}
           </button>
-          <button type="button" class="mini-icon remove-case" title="刪除測資" aria-label="刪除測資" onclick={() => removeTestCase(testCase.id)} disabled={testCases.length === 1}><Trash2 size={13} /></button>
-        </li>{/each}</ul>
-      {:else}<p class="empty-note">尚無測資，點擊上方新增。</p>{/if}
-    </aside>
-  </div>
-</dialog></div>{/if}
+        </div>
+        <p class="problem-status" class:error={problemError}>{problemStatus}</p>
+        {#if problemError}<p class="problem-error" role="alert">
+            {problemError}
+          </p>{/if}
+      </form>
+      {#if problem}
+        <div class="problem-content">
+          <div class="problem-panel">
+            {#each problemSections as section (section.id)}
+              <section class="problem-section" data-section={section.id}>
+                <h3 class="problem-section-title">{section.label}</h3>
+                <div class="problem-prose">
+                  {#if problemHtml[section.id]}{@html problemHtml[
+                      section.id
+                    ]}{:else}<p class="problem-empty">
+                      （此區段沒有內容）
+                    </p>{/if}
+                </div>
+              </section>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </dialog>
+  </div>{/if}
+
+{#if showTestManager}<div
+    class="modal-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) closeTestManager();
+    }}
+  >
+    <dialog
+      open
+      class="project-modal test-manager-modal"
+      aria-labelledby="test-manager-title"
+    >
+      <div class="modal-title-row">
+        <div class="modal-icon"><Code2 size={19} /></div>
+        <button
+          type="button"
+          class="mini-icon modal-close"
+          title="關閉"
+          aria-label="關閉"
+          onclick={closeTestManager}><CircleX size={18} /></button
+        >
+      </div>
+      <h2 id="test-manager-title">測資編輯器</h2>
+      <div class="test-manager-body">
+        <div class="test-manager-editor">
+          {#if activeTest}
+            <div class="case-name-row">
+              <input
+                class="case-name"
+                value={activeTest.name}
+                aria-label="測資名稱"
+                placeholder="請輸入測資名稱"
+                onchange={(event) =>
+                  updateTest(activeTest.id, "name", event.currentTarget.value)}
+              />
+              <button
+                type="button"
+                class="mini-icon remove-case"
+                title="刪除測資"
+                aria-label="刪除測資"
+                onclick={() => removeTestCase(activeTest.id)}
+                disabled={testCases.length === 1}><Trash2 size={14} /></button
+              >
+            </div>
+            <label class="code-field-label" for="test-input"
+              >STANDARD INPUT</label
+            ><textarea
+              id="test-input"
+              class="case-textarea"
+              value={activeTest.input}
+              oninput={(event) =>
+                updateTest(activeTest.id, "input", event.currentTarget.value)}
+              spellcheck="false"></textarea>
+            <label class="code-field-label" for="test-expected"
+              >EXPECTED OUTPUT</label
+            ><textarea
+              id="test-expected"
+              class="case-textarea expected-area"
+              value={activeTest.expectedOutput}
+              oninput={(event) =>
+                updateTest(
+                  activeTest.id,
+                  "expectedOutput",
+                  event.currentTarget.value,
+                )}
+              spellcheck="false"></textarea>
+            <div class="case-result-row">
+              {#if activeTest.status}<span
+                  class:status-ac={activeTest.status === "AC"}
+                  class:status-fail={activeTest.status !== "AC"}
+                  class="result-pill">{activeTest.status}</span
+                >{:else}<span class="result-placeholder">尚未執行</span
+                >{/if}{#if activeTest.executionTimeMs !== undefined}<span
+                  >{activeTest.executionTimeMs} ms</span
+                >{/if}
+            </div>
+          {:else}
+            <p class="empty-note">尚無測資，請於右側新增一筆。</p>
+          {/if}
+        </div>
+        <aside class="test-manager-list">
+          <div class="panel-title-row">
+            <h2>測資列表 <small>len: {testCases.length}</small></h2>
+            <button
+              class="mini-icon"
+              title="新增測資"
+              aria-label="新增測資"
+              onclick={addTestCase}><CirclePlus size={15} /></button
+            >
+          </div>
+          {#if testCases.length}
+            <ul class="case-list">
+              {#each testCases as testCase, index (testCase.id)}<li
+                  class="case-row"
+                >
+                  <button
+                    class="case-chip"
+                    class:case-ac={testCase.status === "AC"}
+                    class:case-wa={testCase.status === "WA"}
+                    class:case-other={testCase.status !== "AC" &&
+                      testCase.status !== "WA"}
+                    class:active={activeTestId === testCase.id}
+                    onclick={() => (activeTestId = testCase.id)}
+                    title={`編輯 ${testCase.name}`}
+                  >
+                    <span class="case-index"
+                      >#{String(index + 1).padStart(2, "0")}
+                      {#if testCase.name != ""}<strong>{testCase.name}</strong
+                        >{/if}</span
+                    >
+                    <span class="case-result">{testCase.status ?? "—"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="mini-icon remove-case"
+                    title="刪除測資"
+                    aria-label="刪除測資"
+                    onclick={() => removeTestCase(testCase.id)}
+                    disabled={testCases.length === 1}
+                    ><Trash2 size={13} /></button
+                  >
+                </li>{/each}
+            </ul>
+          {:else}<p class="empty-note">尚無測資，點擊上方新增。</p>{/if}
+        </aside>
+      </div>
+    </dialog>
+  </div>{/if}
